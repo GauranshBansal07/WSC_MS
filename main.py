@@ -15,12 +15,13 @@ from config import (
 from data_fetcher import fetch_monthly_prices, fetch_daily_prices, compute_forward_returns
 from features import compute_all_momentum
 from engine import (
-    build_stacked_dataset, run_expanding_window, get_macro_regimes,
+    build_stacked_dataset, run_expanding_window,
     simulate_portfolio, performance_stats, print_stats
 )
+from regime import get_regimes
 
 
-def run_pit_universe(universe_name, csv_paths, is_weekly=False):
+def run_pit_universe(universe_name, csv_paths, is_weekly=False, regime_method='fixed_hmm'):
     """Run point-in-time universe evaluation (Nifty 50 / Nifty 100)."""
     banner = "=" * 80
     freq_label = "WEEKLY" if is_weekly else "MONTHLY"
@@ -54,7 +55,7 @@ def run_pit_universe(universe_name, csv_paths, is_weekly=False):
 
     rebal_dates = sorted(res_df['date'].unique())
     padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
-    regimes = get_macro_regimes(rebal_dates, padding_start, DATA_END)
+    regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=regime_method)
     
     port_long, c_long, _ = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=False)
     stats_long = performance_stats(port_long, periods_per_year)
@@ -67,7 +68,7 @@ def run_pit_universe(universe_name, csv_paths, is_weekly=False):
     print_stats(stats_ls, f"{universe_name} {freq_label} — LONG + SHORT", c_ls, s_ls, freq_label=short_freq)
 
 
-def run_static_universe(universe_name, ticker_selection, is_weekly=False):
+def run_static_universe(universe_name, ticker_selection, is_weekly=False, regime_method='fixed_hmm'):
     """Run static cached universe evaluation (Nifty 250 / Nifty 500)."""
     banner = "=" * 80
     freq_label = "WEEKLY" if is_weekly else "MONTHLY"
@@ -106,7 +107,7 @@ def run_static_universe(universe_name, ticker_selection, is_weekly=False):
     rebal_dates = sorted(res_df['date'].unique())
     if not rebal_dates: return
     padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
-    regimes = get_macro_regimes(rebal_dates, padding_start, DATA_END)
+    regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=regime_method)
     
     port_long, c_long, _ = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=False)
     stats_long = performance_stats(port_long, periods_per_year)
@@ -126,6 +127,11 @@ def main():
         choices=['nifty50', 'nifty100', 'nifty250', 'nifty500', 'all'],
         help="Index to run backtest on"
     )
+    parser.add_argument(
+        '--regime', type=str, default='fixed_hmm',
+        choices=['fixed_hmm', 'learned_hmm', 'none'],
+        help="Regime switching methodology to apply"
+    )
     args = parser.parse_args()
 
     run_50 = False
@@ -142,17 +148,17 @@ def main():
         elif args.index == 'nifty500': run_500 = True
 
     if run_50:
-        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=False)
-        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=True)
+        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=False, regime_method=args.regime)
+        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=True, regime_method=args.regime)
     if run_100:
-        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=False)
-        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=True)
+        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=False, regime_method=args.regime)
+        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=True, regime_method=args.regime)
     if run_250:
-        run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=False)
-        run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=True)
+        run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=False, regime_method=args.regime)
+        run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=True, regime_method=args.regime)
     if run_500:
-        run_static_universe("NIFTY 500", 'nifty500', is_weekly=False)
-        run_static_universe("NIFTY 500", 'nifty500', is_weekly=True)
+        run_static_universe("NIFTY 500", 'nifty500', is_weekly=False, regime_method=args.regime)
+        run_static_universe("NIFTY 500", 'nifty500', is_weekly=True, regime_method=args.regime)
 
 
 if __name__ == '__main__':

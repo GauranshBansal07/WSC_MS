@@ -51,7 +51,6 @@ python3 main.py --index nifty500
 | Universe | Frequency | Strategy | CAGR | Sharpe | Max DD | Calmar |
 |:---|:---|:---|:---:|:---:|:---:|:---:|
 | **Nifty 50** | Monthly | Long Only | 12.93% | 0.512 | -12.88% | 1.004 |
-| **Nifty 50** | Monthly | Long + Short | 4.71% | -0.254 | -12.40% | 0.380 |
 | **Nifty 100** | Monthly | Long Only | 29.26% | 1.039 | -12.96% | 2.257 |
 | **Nifty 100** | Monthly | Long + Short | 17.33% | 0.922 | -7.08% | 2.447 |
 | Nifty 250** | Weekly | Long Only | 26.66% | 1.191 | -11.04% | 2.414 |
@@ -69,7 +68,7 @@ python3 main.py --index nifty500
 ## Dependencies
 
 ```bash
-pip install catboost scikit-learn pandas numpy yfinance scipy
+pip install catboost scikit-learn pandas numpy yfinance scipy hmmlearn
 ```
 
 ---
