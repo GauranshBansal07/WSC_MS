@@ -1,0 +1,88 @@
+# WSC_MS — Momentum Strategy (CatBoost)
+
+A cross-sectional momentum trading strategy for Indian equity markets using CatBoost, evaluated on the Nifty 50, Nifty 100, and Nifty 500 universes.
+
+## Strategy Overview
+
+- **Signal**: Cross-sectional momentum (1M, 3M, 6M, 12M lookbacks)
+- **Model**: CatBoost classifier predicting whether a stock will beat the cross-sectional median return next period
+- **Regime Filter**: Macro regime detection (Bull / Neutral / Bear) using Nifty 50 SMA stack
+- **Risk**: Daily path stop-loss validation, turnover-based transaction costs, cash allocation for unfilled slots
+- **Evaluation**: Walk-forward out-of-sample, 2021–2025
+
+---
+
+## Repository Structure
+
+```
+.
+├── config.py                  # Global parameters (lookbacks, costs, risk-free rate)
+├── data_fetcher.py            # Price fetching, caching, forward return computation
+├── features.py                # Momentum feature computation + Rank IC
+├── catboost_test.py           # Core engine + Nifty 50 / Nifty 100 runner
+├── nifty500_test.py           # Nifty 500 Monthly (Long Only + Long/Short)
+├── nifty500_weekly_test.py    # Nifty 500 Weekly (Long + Short)
+├── prepare_nifty500.py        # Builds daily/monthly cache from raw 5-min tick CSVs
+└── data/
+    ├── historical_composition.csv       # Point-in-time Nifty 50 composition
+    └── nifty_next_50_composition.csv    # Point-in-time Nifty Next 50 composition
+```
+
+---
+
+## Running the Strategy
+
+### 1. Nifty 50 + Nifty 100 (Survivorship-Bias Free)
+Uses historical point-in-time composition data — only trades stocks that were *actually in the index* on each historical date.
+```bash
+python3 catboost_test.py
+```
+
+### 2. Nifty 500 — Monthly Rebalancing
+Requires raw 5-minute tick CSVs in a `nifty_500_5min/` directory. First, build the price cache:
+```bash
+python3 prepare_nifty500.py
+```
+Then run the monthly backtest (Long Only + Long/Short):
+```bash
+python3 nifty500_test.py
+```
+
+### 3. Nifty 500 — Weekly Rebalancing
+Same cache as above. Resamples daily data to weekly frequency internally:
+```bash
+python3 nifty500_weekly_test.py
+```
+
+---
+
+## Key Results (2021–2025, Out-of-Sample)
+
+| Universe | Frequency | Strategy | CAGR | Sharpe | Max DD | Calmar |
+|:---|:---|:---|:---:|:---:|:---:|:---:|
+| Nifty 500 | Monthly | Long Only | 56.17% | 1.363 | -15.28% | 3.676 |
+| Nifty 500 | Monthly | Long + Short | 20.15% | 0.743 | -14.31% | 1.408 |
+| Nifty 500 | Weekly | Long Only | 31.21% | 1.109 | -18.64% | 1.674 |
+| Nifty 500 | Weekly | Long + Short | 19.46% | 1.020 | -7.86% | 2.474 |
+
+> **Note**: Nifty 500 results use a static snapshot universe (2025 composition). A random baseline on the same universe generates ~23% CAGR, indicating survivorship bias. The Nifty 50/100 runner uses historical point-in-time data and is survivorship-bias free.
+
+---
+
+## Dependencies
+
+```bash
+pip install catboost scikit-learn pandas numpy yfinance scipy
+```
+
+---
+
+## Configuration (`config.py`)
+
+| Parameter | Value | Description |
+|:---|:---:|:---|
+| `TRANSACTION_COST_BPS` | 10 | Cost per side (bps) |
+| `SHORT_BORROW_COST_ANNUAL` | 8% | Annual cost to borrow for shorts |
+| `RISK_FREE_ANNUAL` | 7% | India 10Y govt bond proxy |
+| `DATA_START` | 2008-01-01 | Start of price history |
+| `DATA_END` | 2025-04-01 | End of evaluation period |
