@@ -50,18 +50,18 @@ python3 main.py --index nifty500
 
 | Universe | Frequency | Strategy | CAGR | Sharpe | Max DD | Calmar |
 |:---|:---|:---|:---:|:---:|:---:|:---:|
-| **Nifty 50** | Monthly | Long Only | 20.09% | 0.748 | -14.98% | 1.341 |
-| **Nifty 50** | Monthly | Long + Short | 5.56% | -0.127 | -17.32% | 0.321 |
-| **Nifty 100** | Monthly | Long Only | 31.57% | 1.031 | -17.90% | 1.764 |
-| **Nifty 100** | Monthly | Long + Short | 14.03% | 0.647 | -11.91% | 1.178 |
-| Nifty 250** | Weekly | Long Only | 29.67% | 1.127 | -9.96% | 2.978 |
-| Nifty 250** | Weekly | Long + Short | 11.29% | 0.443 | -10.16% | 1.111 |
-| Nifty 250** | Monthly | Long Only | 4.15% | -0.126 | -23.68% | 0.175 |
-| Nifty 250** | Monthly | Long + Short | -2.21% | -0.871 | -26.63% | -0.083 |
-| Nifty 500* | Monthly | Long Only | 56.17% | 1.363 | -15.28% | 3.676 |
-| Nifty 500* | Monthly | Long + Short | 20.15% | 0.743 | -14.31% | 1.408 |
-| Nifty 500* | Weekly | Long Only | 31.21% | 1.109 | -18.64% | 1.674 |
-| Nifty 500* | Weekly | Long + Short | 19.46% | 1.020 | -7.86% | 2.474 |
+| **Nifty 50** | Monthly | Long Only | 12.93% | 0.512 | -12.88% | 1.004 |
+| **Nifty 50** | Monthly | Long + Short | 4.71% | -0.254 | -12.40% | 0.380 |
+| **Nifty 100** | Monthly | Long Only | 29.26% | 1.039 | -12.96% | 2.257 |
+| **Nifty 100** | Monthly | Long + Short | 17.33% | 0.922 | -7.08% | 2.447 |
+| Nifty 250** | Weekly | Long Only | 26.66% | 1.191 | -11.04% | 2.414 |
+| Nifty 250** | Weekly | Long + Short | 13.21% | 0.663 | -6.88% | 1.920 |
+| Nifty 250** | Monthly | Long Only | 9.92% | 0.254 | -21.68% | 0.457 |
+| Nifty 250** | Monthly | Long + Short | 5.04% | -0.136 | -12.66% | 0.398 |
+| Nifty 500* | Monthly | Long Only | 42.50% | 1.431 | -12.75% | 3.334 |
+| Nifty 500* | Monthly | Long + Short | 23.77% | 1.078 | -7.03% | 3.383 |
+| Nifty 500* | Weekly | Long Only | 31.17% | 1.146 | -9.13% | 3.414 |
+| Nifty 500* | Weekly | Long + Short | 22.34% | 1.210 | -6.52% | 3.424 |
 
 > **Note**: Nifty 50 and Nifty 100 runs are **survivorship-bias free**, using historical point-in-time composition data to strictly limit stock selection to names that were actively in the index on each historical date. 
 > *Nifty 500 results use a static snapshot universe (2025 composition). A random baseline on the same universe generates ~23% CAGR, indicating survivorship bias inflates the Nifty 500 results.
