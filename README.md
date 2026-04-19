@@ -64,6 +64,10 @@ python3 nifty500_weekly_test.py
 | **Nifty 50** | Monthly | Long + Short | 5.56% | -0.127 | -17.32% | 0.321 |
 | **Nifty 100** | Monthly | Long Only | 31.57% | 1.031 | -17.90% | 1.764 |
 | **Nifty 100** | Monthly | Long + Short | 14.03% | 0.647 | -11.91% | 1.178 |
+| Nifty 250** | Weekly | Long Only | 29.67% | 1.127 | -9.96% | 2.978 |
+| Nifty 250** | Weekly | Long + Short | 11.29% | 0.443 | -10.16% | 1.111 |
+| Nifty 250** | Monthly | Long Only | 4.15% | -0.126 | -23.68% | 0.175 |
+| Nifty 250** | Monthly | Long + Short | -2.21% | -0.871 | -26.63% | -0.083 |
 | Nifty 500* | Monthly | Long Only | 56.17% | 1.363 | -15.28% | 3.676 |
 | Nifty 500* | Monthly | Long + Short | 20.15% | 0.743 | -14.31% | 1.408 |
 | Nifty 500* | Weekly | Long Only | 31.21% | 1.109 | -18.64% | 1.674 |
@@ -71,6 +75,7 @@ python3 nifty500_weekly_test.py
 
 > **Note**: Nifty 50 and Nifty 100 runs are **survivorship-bias free**, using historical point-in-time composition data to strictly limit stock selection to names that were actively in the index on each historical date. 
 > *Nifty 500 results use a static snapshot universe (2025 composition). A random baseline on the same universe generates ~23% CAGR, indicating survivorship bias inflates the Nifty 500 results.
+> **Nifty 250 proxy: Uses the top 250 stocks by historical observation count (oldest, large/mid-caps). Note the severe drop in monthly performance because all recent high-growth small-caps and IPOs are excluded in this subset.
 
 ---
 
