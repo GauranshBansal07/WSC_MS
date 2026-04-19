@@ -1,46 +1,18 @@
-"""
-CatBoost cross-sectional momentum strategy for Nifty 50 / Nifty 100.
-
-Pipeline:
-  1. Load point-in-time constituency and month-end prices.
-  2. Build 10 momentum features (raw + cross-sectional z-score at 1/6/12/36/60m).
-  3. Label each stock-month: 1 if forward return beats the cohort median, else 0.
-  4. Walk-forward CatBoost classifier with expanding training window.
-  5. Portfolio construction:
-       - Regime filter (Nifty SMA stack -> Bull/Neutral/Bear).
-       - Regime-sized book (10 / 4 / 3 names) above a 0.55 probability gate.
-       - Equal-weight positions.
-       - Monthly stop-loss approximation (floor monthly return at regime stop).
-       - Turnover-scaled round-trip transaction cost.
-"""
-import os
-import sys
-import warnings
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from catboost import CatBoostClassifier
-from sklearn.metrics import accuracy_score, precision_score
-
-sys.path.insert(0, os.path.dirname(__file__))
-warnings.filterwarnings('ignore')
+import logging
 
 from config import (
-    HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV,
-    LOOKBACK_WINDOWS, DATA_START, DATA_END, TRANSACTION_COST_BPS,
-    SHORT_BORROW_COST_ANNUAL,
+    TRANSACTION_COST_BPS, SHORT_BORROW_COST_ANNUAL, RISK_FREE_ANNUAL
 )
-from data_fetcher import (
-    fetch_monthly_prices, fetch_daily_prices, compute_forward_returns,
-)
-from features import compute_all_momentum
 
 # ---- Portfolio constants --------------------------------------------------
 PROB_THRESHOLD = 0.55
 SHORT_PROB_THRESHOLD = 0.45
-TX_COST_SIDE = TRANSACTION_COST_BPS / 10000.0    # bps per side from config
-TX_COST_RT = 2.0 * TX_COST_SIDE                  # round-trip cost (buy + sell)
+TX_COST_SIDE = TRANSACTION_COST_BPS / 10000.0    # bps per side
+TX_COST_RT = 2.0 * TX_COST_SIDE                  # round-trip cost
 SHORT_BORROW_MTH = SHORT_BORROW_COST_ANNUAL / 12.0
 
 REGIME_SIZE = {'Bull': 10, 'Neutral': 4, 'Bear': 3}
@@ -48,9 +20,8 @@ REGIME_STOP = {'Bull': -0.10, 'Neutral': -0.07, 'Bear': -0.05}
 SHORT_REGIME_SIZE = {'Bull': 3, 'Neutral': 4, 'Bear': 10}
 SHORT_REGIME_STOP = {'Bull': 0.10, 'Neutral': 0.07, 'Bear': 0.05}
 
-
 # ---- Feature panel --------------------------------------------------------
-def build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks=[1, 6, 12, 36, 60]):
+def build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks):
     """Stack panel to (Date, Ticker) rows with cross-sectional label and features."""
     mask_aligned = mask.reindex(index=prices.index, columns=prices.columns).fillna(False)
     cfwd = fwd_returns.where(mask_aligned)
@@ -77,12 +48,11 @@ def build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks=[1
     combined = combined[combined['is_constituent']].dropna()
     return combined
 
-
 # ---- Walk-forward classifier ---------------------------------------------
 def run_expanding_window(stacked_data, min_train_months=60):
     dates = sorted(stacked_data.index.get_level_values(0).unique())
     if len(dates) < min_train_months + 10:
-        print(f"Not enough dates: {len(dates)}")
+        print(f"Not enough dates to run valid walk-forward: {len(dates)}")
         return None
 
     feature_cols = [c for c in stacked_data.columns if c.startswith(('mom_', 'zscore_'))]
@@ -120,10 +90,32 @@ def run_expanding_window(stacked_data, min_train_months=60):
         }))
     return pd.concat(results, axis=0)
 
+# ---- Regime classifier (HMM on Nifty 50) ---------------------
+def forward_backward(returns, means, stds, trans, init):
+    n = len(returns)
+    K = len(means)
+    log_emit = np.zeros((n, K))
+    for k in range(K):
+        log_emit[:, k] = (-0.5 * np.log(2 * np.pi * stds[k] ** 2)
+                          - (returns - means[k]) ** 2 / (2 * stds[k] ** 2))
+    log_trans = np.log(trans + 1e-15)
+    log_init  = np.log(init + 1e-15)
+    log_alpha = np.full((n, K), -np.inf)
+    log_alpha[0] = log_init + log_emit[0]
+    for t in range(1, n):
+        for j in range(K):
+            log_alpha[t, j] = (np.logaddexp.reduce(log_alpha[t - 1] + log_trans[:, j])
+                               + log_emit[t, j])
+    log_beta = np.zeros((n, K))
+    for t in range(n - 2, -1, -1):
+        for i in range(K):
+            log_beta[t, i] = np.logaddexp.reduce(
+                log_trans[i] + log_emit[t + 1] + log_beta[t + 1])
+    log_gamma = log_alpha + log_beta
+    log_gamma -= np.logaddexp.reduce(log_gamma, axis=1, keepdims=True)
+    return np.exp(log_gamma)
 
-# ---- Regime classifier (daily SMA stack on Nifty 50) ---------------------
 def get_macro_regimes(dates, start_date, end_date):
-    import logging
     yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
     logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
@@ -134,50 +126,44 @@ def get_macro_regimes(dates, start_date, end_date):
         prices = nifty['Close'] if 'Close' in nifty.columns else nifty.iloc[:, -1]
     prices = prices.squeeze().ffill()
 
-    sma20 = prices.rolling(20).mean()
-    sma50 = prices.rolling(50).mean()
-    sma100 = prices.rolling(100).mean()
-    r1 = (prices / prices.shift(20) - 1) * 100
-    r3 = (prices / prices.shift(60) - 1) * 100
-    r6 = (prices / prices.shift(126) - 1) * 100
-    vol = (prices / prices.shift(1) - 1).rolling(252).std() * np.sqrt(252) * 100
+    # --- HMM Parameters (from config) ---
+    means = np.array([0.0009, -0.0006, -0.0020])
+    stds  = np.array([0.0080,  0.0145,  0.0310])
+    trans = np.array([
+        [0.970, 0.025, 0.005],
+        [0.040, 0.945, 0.015],
+        [0.020, 0.080, 0.900],
+    ])
+    init = np.array([0.7, 0.2, 0.1])
+    
+    # Map HMM state -> our logic
+    state_map = {0: 'Bull', 1: 'Neutral', 2: 'Bear'}
 
     regimes = {}
     for d in dates:
         window = prices.loc[:d]
-        if window.empty or len(window) < 126:
+        if window.empty or len(window) < 20:
             regimes[d] = 'Neutral'
             continue
-        idx = window.index[-1]
-        p, s20, s50, s100 = prices.loc[idx], sma20.loc[idx], sma50.loc[idx], sma100.loc[idx]
-        ret1, ret3, ret6, v = r1.loc[idx], r3.loc[idx], r6.loc[idx], vol.loc[idx]
-        ma = int(s20 > s50) + int(s50 > s100) + int(p > s20)
-
-        bull = (((p > s20 and p > s50 and p > s100) or (ret6 > 8 and ret3 > 5))
-                and ret1 > 2 and ret3 > 3 and ret6 > 5 and ma >= 2)
-        bear = (((p < s20 and p < s50 and p < s100) or (ret6 < -8 and ret3 < -5))
-                and ret1 < -2 and ret3 < -3 and ret6 < -5 and ma <= 1)
-
-        if bull and v < 22:
-            regimes[d] = 'Bull'
-        elif bear and v < 22:
-            regimes[d] = 'Bear'
-        else:
+            
+        returns_window = (window / window.shift(1) - 1).dropna().values
+        
+        if len(returns_window) == 0:
             regimes[d] = 'Neutral'
+            continue
+            
+        gamma = forward_backward(returns_window, means, stds, trans, init)
+        best_state = int(np.argmax(gamma[-1]))
+        regimes[d] = state_map[best_state]
+        
     return regimes
-
-
-# Monthly approximate return functions removed: Daily trajectory is now used in simulate_portfolio
-
 
 # ---- Portfolio engine -----------------------------------------------------
 def simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True):
-    """Monthly rebalance with strictly validated DAILY stop-loss tracing for both Longs and Shorts."""
+    """Rebalance with strictly validated DAILY stop-loss tracing for both Longs and Shorts."""
     returns, holdings_counts, short_counts, rebal_dates = [], [], [], []
     
-    from config import RISK_FREE_ANNUAL, SHORT_BORROW_COST_ANNUAL
     prev_weights = {}
-
     all_dates = sorted(res_df['date'].unique())
 
     for i, date in enumerate(all_dates):
@@ -206,9 +192,8 @@ def simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True):
 
         next_date = all_dates[i+1] if i + 1 < len(all_dates) else None
         
-        # Determine exact duration to accurately compound risk-free rate and short borrow cost
         if next_date is not None:
-            days_held = (pd.Timestamp(next_date) - pd.Timestamp(date)).days
+            days_held = max(1, (pd.Timestamp(next_date) - pd.Timestamp(date)).days)
             d_window = daily_prices.loc[date:next_date]
         else:
             days_held = 30 # Default approximation for terminal element
@@ -260,7 +245,7 @@ def simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True):
         
         all_tickers = set(prev_weights.keys()).union(curr_weights.keys())
         turnover = sum(abs(curr_weights.get(t, 0.0) - prev_weights.get(t, 0.0)) for t in all_tickers)
-        tx_cost = turnover * (TRANSACTION_COST_BPS / 10000.0)
+        tx_cost = turnover * TX_COST_SIDE
         
         net = gross - tx_cost
         returns.append(net)
@@ -268,17 +253,15 @@ def simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True):
 
     return pd.Series(returns, index=pd.DatetimeIndex(rebal_dates)), holdings_counts, short_counts
 
-
-def performance_stats(port_ret):
-    from config import RISK_FREE_ANNUAL
-    rf_monthly = (1 + RISK_FREE_ANNUAL)**(1.0/12.0) - 1.0
+def performance_stats(port_ret, periods_per_year=12):
+    rf_period = (1 + RISK_FREE_ANNUAL)**(1.0/periods_per_year) - 1.0
     
     total = (np.prod(1 + port_ret) - 1) * 100
-    ann = (np.prod(1 + port_ret) ** (12 / len(port_ret)) - 1) * 100
-    vol = port_ret.std() * np.sqrt(12) * 100
+    ann = (np.prod(1 + port_ret) ** (periods_per_year / max(1, len(port_ret))) - 1) * 100
+    vol = port_ret.std() * np.sqrt(periods_per_year) * 100
     
-    mean_excess = port_ret.mean() - rf_monthly
-    sharpe = (mean_excess / port_ret.std() * np.sqrt(12)) if port_ret.std() > 0 else 0.0
+    mean_excess = port_ret.mean() - rf_period
+    sharpe = (mean_excess / port_ret.std() * np.sqrt(periods_per_year)) if port_ret.std() > 0 else 0.0
     
     cum = (1 + port_ret).cumprod()
     dd = ((cum - cum.cummax()) / cum.cummax()).min() * 100
@@ -286,100 +269,18 @@ def performance_stats(port_ret):
     win = (port_ret > 0).mean() * 100
     return dict(total=total, ann=ann, vol=vol, sharpe=sharpe, dd=dd, calmar=calmar, win=win)
 
-
-def trailing_window_stats(port_ret, years=5):
-    """Compute trailing window performance stats from dated monthly returns."""
-    if len(port_ret) == 0:
-        return None
-    cutoff = port_ret.index.max() - pd.DateOffset(years=years)
-    window = port_ret[port_ret.index > cutoff]
-    if len(window) == 0:
-        return None
-    return performance_stats(window)
-
-
-# ---- Universe driver ------------------------------------------------------
-def evaluate_universe(universe_name, csv_paths):
+def print_stats(stats, label, counts_long, counts_short=None, freq_label="mo"):
     banner = "=" * 80
-    print(f"\n{banner}\nCATBOOST STRATEGY — {universe_name}\n{banner}")
-
-    print("\n[1] Loading monthly prices + composition mask...")
-    prices, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
-    daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    fwd_returns = compute_forward_returns(prices)
-    momentum_dict = compute_all_momentum(prices, LOOKBACK_WINDOWS)
-
-    print("\n[2] Building feature panel...")
-    stacked = build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS)
-    print(f"  Observations: {len(stacked)}  |  Avg monthly universe: "
-          f"{stacked.groupby(level=0).size().mean():.1f}")
-
-    print("\n[3] Walk-forward CatBoost classification...")
-    res_df = run_expanding_window(stacked, min_train_months=60)
-    if res_df is None:
-        return
-
-    acc = accuracy_score(res_df['actual'], res_df['pred_class'])
-    prec = precision_score(res_df['actual'], res_df['pred_class'])
-    print(f"  Classifier accuracy: {acc:.3f}  |  precision: {prec:.3f}")
-    print(f"  Transaction cost (bps per side): {TRANSACTION_COST_BPS}")
-    print(f"  Transaction cost (round-trip bps): {2 * TRANSACTION_COST_BPS}")
-
-    print("\n[4] Classifying macro regimes...")
-    rebal_dates = sorted(res_df['date'].unique())
-    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
-    regimes = get_macro_regimes(rebal_dates, padding_start, DATA_END)
-
-    print(f"\n[5] Simulating portfolio with DAILY stop approximation + dynamic transaction costs...")
+    print(f"\n{banner}\nPORTFOLIO RESULT — {label}\n{banner}")
+    if counts_long:
+        print(f"  Avg long holdings / {freq_label}: {np.mean(counts_long):.1f}")
+    if counts_short:
+        print(f"  Avg short holdings / {freq_label}:{np.mean(counts_short):.1f}")
     
-    port_ret_long, counts_long, _ = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=False)
-    stats_long = performance_stats(port_ret_long)
-    
-    port_ret_ls, counts_ls, short_counts_ls = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True)
-    stats_ls = performance_stats(port_ret_ls)
-
-    print(f"\n{banner}\nPORTFOLIO RESULT — {universe_name} — LONG ONLY\n{banner}")
-    print(f"  Avg long holdings / mo: {np.mean(counts_long):.1f}")
-    print(f"  Total Return (%):       {stats_long['total']:.2f}")
-    print(f"  Annualized Return (%):  {stats_long['ann']:.2f}")
-    print(f"  Volatility (%):         {stats_long['vol']:.2f}")
-    print(f"  Sharpe Ratio:           {stats_long['sharpe']:.3f}")
-    print(f"  Max Drawdown (%):       {stats_long['dd']:.2f}")
-    print(f"  Calmar Ratio:           {stats_long['calmar']:.3f}")
-
-    print(f"\n{banner}\nPORTFOLIO RESULT — {universe_name} — LONG + SHORT\n{banner}")
-    print(f"  Avg long holdings / mo: {np.mean(counts_ls):.1f}")
-    print(f"  Avg short holdings / mo:{np.mean(short_counts_ls):.1f}")
-    print(f"  Total Return (%):       {stats_ls['total']:.2f}")
-    print(f"  Annualized Return (%):  {stats_ls['ann']:.2f}")
-    print(f"  Volatility (%):         {stats_ls['vol']:.2f}")
-    print(f"  Sharpe Ratio:           {stats_ls['sharpe']:.3f}")
-    print(f"  Max Drawdown (%):       {stats_ls['dd']:.2f}")
-    print(f"  Calmar Ratio:           {stats_ls['calmar']:.3f}")
-
-    stats_5y = trailing_window_stats(port_ret_ls, years=5)
-
-
-    if stats_5y is not None:
-        print("\n  --- Trailing 5-Year Metrics ---")
-        print(f"  Total Return (%):       {stats_5y['total']:.2f}")
-        print(f"  Annualized Return (%):  {stats_5y['ann']:.2f}")
-        print(f"  Volatility (%):         {stats_5y['vol']:.2f}")
-        print(f"  Sharpe Ratio:           {stats_5y['sharpe']:.3f}")
-        print(f"  Max Drawdown (%):       {stats_5y['dd']:.2f}")
-        print(f"  Calmar Ratio:           {stats_5y['calmar']:.3f}")
-        print(f"  Win Rate (%):           {stats_5y['win']:.2f}")
-
-    os.makedirs('output', exist_ok=True)
-    suffix = universe_name.replace(' ', '_').lower()
-    res_df.to_csv(f'output/catboost_preds_{suffix}.csv', index=False)
-    print(f"\n  Predictions saved -> output/catboost_preds_{suffix}.csv")
-
-
-def main():
-    evaluate_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV])
-    evaluate_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV])
-
-
-if __name__ == '__main__':
-    main()
+    print(f"  Total Return (%):       {stats['total']:.2f}")
+    print(f"  Annualized Return (%):  {stats['ann']:.2f}")
+    print(f"  Volatility (%):         {stats['vol']:.2f}")
+    print(f"  Sharpe Ratio:           {stats['sharpe']:.3f}")
+    print(f"  Max Drawdown (%):       {stats['dd']:.2f}")
+    print(f"  Calmar Ratio:           {stats['calmar']:.3f}")
+    print(f"  Win Rate (%):           {stats['win']:.2f}")

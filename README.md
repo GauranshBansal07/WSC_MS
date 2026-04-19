@@ -19,9 +19,8 @@ A cross-sectional momentum trading strategy for Indian equity markets using CatB
 ├── config.py                  # Global parameters (lookbacks, costs, risk-free rate)
 ├── data_fetcher.py            # Price fetching, caching, forward return computation
 ├── features.py                # Momentum feature computation + Rank IC
-├── catboost_test.py           # Core engine + Nifty 50 / Nifty 100 runner
-├── nifty500_test.py           # Nifty 500 Monthly (Long Only + Long/Short)
-├── nifty500_weekly_test.py    # Nifty 500 Weekly (Long + Short)
+├── engine.py                  # Core backtesting engine + HMM Regime Logic
+├── main.py                    # Unified CLI runner for all indices
 ├── prepare_nifty500.py        # Builds daily/monthly cache from raw 5-min tick CSVs
 └── data/
     ├── historical_composition.csv       # Point-in-time Nifty 50 composition
@@ -32,26 +31,17 @@ A cross-sectional momentum trading strategy for Indian equity markets using CatB
 
 ## Running the Strategy
 
-### 1. Nifty 50 + Nifty 100 (Survivorship-Bias Free)
-Uses historical point-in-time composition data — only trades stocks that were *actually in the index* on each historical date.
+The entire suite has been consolidated into a single runner which applies the Hidden Markov Model (HMM) regime logic across all universes.
+
+### Run All Indexes
 ```bash
-python3 catboost_test.py
+python3 main.py
 ```
 
-### 2. Nifty 500 — Monthly Rebalancing
-Requires raw 5-minute tick CSVs in a `nifty_500_5min/` directory. First, build the price cache:
+### Run a Specific Index
 ```bash
-python3 prepare_nifty500.py
-```
-Then run the monthly backtest (Long Only + Long/Short):
-```bash
-python3 nifty500_test.py
-```
-
-### 3. Nifty 500 — Weekly Rebalancing
-Same cache as above. Resamples daily data to weekly frequency internally:
-```bash
-python3 nifty500_weekly_test.py
+python3 main.py --index nifty100
+python3 main.py --index nifty500
 ```
 
 ---
