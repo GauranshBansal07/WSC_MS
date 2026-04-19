@@ -52,12 +52,13 @@ python3 main.py --index nifty500
 |:---|:---|:---|:---:|:---:|:---:|:---:|
 | **Nifty 50** | Monthly | Long Only | 12.93% | 0.512 | -12.88% | 1.004 |
 | **Nifty 50** | Monthly | Long + Short | 4.71% | -0.254 | -12.40% | 0.380 |
+| **Nifty 50** | Weekly | Long Only | 10.55% | 0.346 | -15.88% | 0.665 |
+| **Nifty 50** | Weekly | Long + Short | 4.16% | -0.369 | -14.01% | 0.297 |
 | **Nifty 100** | Monthly | Long Only | 29.26% | 1.039 | -12.96% | 2.257 |
 | **Nifty 100** | Monthly | Long + Short | 17.33% | 0.922 | -7.08% | 2.447 |
+| **Nifty 100** | Weekly | Long Only | 13.57% | 0.590 | -23.06% | 0.588 |
+| **Nifty 100** | Weekly | Long + Short | 4.99% | -0.238 | -13.20% | 0.378 |
 | Nifty 250** | Weekly | Long Only | 26.66% | 1.191 | -11.04% | 2.414 |
-| Nifty 250** | Weekly | Long + Short | 13.21% | 0.663 | -6.88% | 1.920 |
-| Nifty 250** | Monthly | Long Only | 9.92% | 0.254 | -21.68% | 0.457 |
-| Nifty 250** | Monthly | Long + Short | 5.04% | -0.136 | -12.66% | 0.398 |
 | Nifty 500* | Monthly | Long Only | 42.50% | 1.431 | -12.75% | 3.334 |
 | Nifty 500* | Monthly | Long + Short | 23.77% | 1.078 | -7.03% | 3.383 |
 | Nifty 500* | Weekly | Long Only | 31.17% | 1.146 | -9.13% | 3.414 |

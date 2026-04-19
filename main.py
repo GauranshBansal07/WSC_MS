@@ -20,18 +20,32 @@ from engine import (
 )
 
 
-def run_pit_universe(universe_name, csv_paths):
+def run_pit_universe(universe_name, csv_paths, is_weekly=False):
     """Run point-in-time universe evaluation (Nifty 50 / Nifty 100)."""
     banner = "=" * 80
-    print(f"\n{banner}\nCATBOOST HMM STRATEGY — {universe_name} (PiT)\n{banner}")
+    freq_label = "WEEKLY" if is_weekly else "MONTHLY"
+    print(f"\n{banner}\nCATBOOST HMM STRATEGY — {universe_name} (PiT) {freq_label}\n{banner}")
 
-    prices, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
+    monthly_prices, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    fwd_returns = compute_forward_returns(prices)
-    momentum_dict = compute_all_momentum(prices, LOOKBACK_WINDOWS)
+    
+    if is_weekly:
+        prices = daily_prices.resample('W-FRI').last().dropna(how='all')
+        mask = mask.resample('W-FRI').ffill().reindex(prices.index).ffill().fillna(False)
+        periods_per_year = 52
+        lookbacks = [1, 4, 12, 24, 52]
+        min_train = 156
+    else:
+        prices = monthly_prices
+        periods_per_year = 12
+        lookbacks = LOOKBACK_WINDOWS
+        min_train = 60
 
-    stacked = build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS)
-    res_df = run_expanding_window(stacked, min_train_months=60)
+    fwd_returns = compute_forward_returns(prices)
+    momentum_dict = compute_all_momentum(prices, lookbacks)
+
+    stacked = build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks)
+    res_df = run_expanding_window(stacked, min_train_months=min_train)
     if res_df is None: return
 
     acc = accuracy_score(res_df['actual'], res_df['pred_class'])
@@ -43,13 +57,14 @@ def run_pit_universe(universe_name, csv_paths):
     regimes = get_macro_regimes(rebal_dates, padding_start, DATA_END)
     
     port_long, c_long, _ = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=False)
-    stats_long = performance_stats(port_long, 12)
+    stats_long = performance_stats(port_long, periods_per_year)
     
     port_ls, c_ls, s_ls = simulate_portfolio(res_df, regimes, daily_prices, enable_shorts=True)
-    stats_ls = performance_stats(port_ls, 12)
+    stats_ls = performance_stats(port_ls, periods_per_year)
 
-    print_stats(stats_long, f"{universe_name} — LONG ONLY", c_long, freq_label="mo")
-    print_stats(stats_ls, f"{universe_name} — LONG + SHORT", c_ls, s_ls, freq_label="mo")
+    short_freq = "wk" if is_weekly else "mo"
+    print_stats(stats_long, f"{universe_name} {freq_label} — LONG ONLY", c_long, freq_label=short_freq)
+    print_stats(stats_ls, f"{universe_name} {freq_label} — LONG + SHORT", c_ls, s_ls, freq_label=short_freq)
 
 
 def run_static_universe(universe_name, ticker_selection, is_weekly=False):
@@ -127,9 +142,11 @@ def main():
         elif args.index == 'nifty500': run_500 = True
 
     if run_50:
-        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV])
+        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=False)
+        run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV], is_weekly=True)
     if run_100:
-        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV])
+        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=False)
+        run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV], is_weekly=True)
     if run_250:
         run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=False)
         run_static_universe("NIFTY 250 (Proxy)", 'nifty250', is_weekly=True)
