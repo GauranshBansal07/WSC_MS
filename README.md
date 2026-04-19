@@ -50,14 +50,14 @@ python3 main.py --index nifty500
 
 | Universe | Frequency | Strategy | CAGR | Sharpe | Max DD | Calmar |
 |:---|:---|:---|:---:|:---:|:---:|:---:|
-| **Nifty 50** | Monthly | Long Only | 12.93% | 0.512 | -12.88% | 1.004 |
-| **Nifty 100** | Monthly | Long Only | 29.26% | 1.039 | -12.96% | 2.257 |
-| **Nifty 100** | Monthly | Long + Short | 17.33% | 0.922 | -7.08% | 2.447 |
-| Nifty 250** | Weekly | Long Only | 26.66% | 1.191 | -11.04% | 2.414 |
-| Nifty 500* | Monthly | Long Only | 42.50% | 1.431 | -12.75% | 3.334 |
-| Nifty 500* | Monthly | Long + Short | 23.77% | 1.078 | -7.03% | 3.383 |
-| Nifty 500* | Weekly | Long Only | 31.17% | 1.146 | -9.13% | 3.414 |
-| Nifty 500* | Weekly | Long + Short | 22.34% | 1.210 | -6.52% | 3.424 |
+| **Nifty 50** | Monthly | Long Only | 12.76% | 0.461 | -12.88% | 0.991 |
+| **Nifty 100** | Monthly | Long Only | 30.19% | 1.088 | -13.00% | 2.323 |
+| **Nifty 100** | Monthly | Long + Short | 16.91% | 0.896 | -8.26% | 2.046 |
+| Nifty 250** | Weekly | Long Only | 24.22% | 1.162 | -9.11% | 2.660 |
+| Nifty 500* | Monthly | Long Only | 50.90% | 1.531 | -13.37% | 3.807 |
+| Nifty 500* | Monthly | Long + Short | 23.21% | 0.965 | -9.23% | 2.513 |
+| Nifty 500* | Weekly | Long Only | 25.59% | 1.007 | -9.74% | 2.629 |
+| Nifty 500* | Weekly | Long + Short | 19.87% | 0.996 | -7.69% | 2.582 |
 
 > **Note**: Nifty 50 and Nifty 100 runs are **survivorship-bias free**, using historical point-in-time composition data to strictly limit stock selection to names that were actively in the index on each historical date. 
 > *Nifty 500 results use a static snapshot universe (2025 composition). A random baseline on the same universe generates ~23% CAGR, indicating survivorship bias inflates the Nifty 500 results.

@@ -128,7 +128,7 @@ def main():
         help="Index to run backtest on"
     )
     parser.add_argument(
-        '--regime', type=str, default='fixed_hmm',
+        '--regime', type=str, default='learned_hmm',
         choices=['fixed_hmm', 'learned_hmm', 'none'],
         help="Regime switching methodology to apply"
     )
