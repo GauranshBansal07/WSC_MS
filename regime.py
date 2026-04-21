@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 import logging
 
+
 def forward_backward(returns, means, stds, trans, init):
     n = len(returns)
     K = len(means)
@@ -38,65 +39,72 @@ def _get_fixed_hmm(rebal_dates, prices):
     ])
     init = np.array([0.7, 0.2, 0.1])
     state_map = {0: 'Bull', 1: 'Neutral', 2: 'Bear'}
-    
+
     regimes = {}
     for d in rebal_dates:
         window = prices.loc[:d]
         if window.empty or len(window) < 20:
             regimes[d] = 'Neutral'
             continue
-            
+
         returns_window = (window / window.shift(1) - 1).dropna().values
         if len(returns_window) == 0:
             regimes[d] = 'Neutral'
             continue
-            
+
         gamma = forward_backward(returns_window, means, stds, trans, init)
         best_state = int(np.argmax(gamma[-1]))
         regimes[d] = state_map[best_state]
-        
+
     return regimes
 
 
 def _get_learned_hmm(rebal_dates, prices):
+    """
+    Walk-forward bivariate Gaussian HMM.
+
+    Observation vector: (daily log-return, 20-day realized vol)
+    - Fit on an expanding window of data strictly BEFORE rebalance date t
+    - Refit every 12 months, 5 random restarts (seeds 0-4), pick highest log-score
+    - Sort states by fitted mean return ASCENDING: lowest -> Bear, middle -> Neutral, highest -> Bull
+    - Falls back to 'Neutral' if insufficient history (< 252 days) or all fits fail
+    """
     try:
         from hmmlearn.hmm import GaussianHMM
     except ImportError:
         logging.warning("hmmlearn not installed! Please run 'pip install hmmlearn'. Returning 'Neutral'.")
         return {d: 'Neutral' for d in rebal_dates}
-        
+
     df = pd.DataFrame(prices)
     df.columns = ['Close']
     df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['vol'] = df['log_ret'].rolling(20).std()
     df = df.dropna()
-    
+
     regimes = {}
     last_fit_date = None
     best_model = None
     label_map = None
-    
     warned_data = False
-    
+
     for d in rebal_dates:
-        # Strictly use data BEFORE rebalance date
+        # Strictly use data BEFORE rebalance date (no look-ahead)
         data_up_to_t = df.loc[df.index < d]
-        
+
         if len(data_up_to_t) < 252:
             if not warned_data:
                 logging.warning(f"Not enough data to fit HMM before {d} (< 252 days). Using 'Neutral'.")
                 warned_data = True
             regimes[d] = 'Neutral'
             continue
-            
-        # Refit every 12 months
+
+        # Refit every 12 months on expanding window
         if last_fit_date is None or (d - last_fit_date).days >= 365:
             X_train = data_up_to_t[['log_ret', 'vol']].values
-            
+
             best_score = -np.inf
             current_best_model = None
-            
-            # 5 random restarts (seeds 0..4)
+
             for seed in range(5):
                 model = GaussianHMM(n_components=3, covariance_type='full', n_iter=100, random_state=seed)
                 try:
@@ -107,16 +115,14 @@ def _get_learned_hmm(rebal_dates, prices):
                         current_best_model = model
                 except Exception:
                     continue
-                    
+
             if current_best_model is not None:
                 best_model = current_best_model
                 last_fit_date = d
-                
-                # Permute labels: sort by means_[:, 0] (log_ret mean) ascending
+
+                # Sort states by mean return ascending: Bear < Neutral < Bull
                 mean_returns = best_model.means_[:, 0]
                 sorted_idx = np.argsort(mean_returns)
-                
-                # lowest-mean -> Bear, middle-mean -> Neutral, highest-mean -> Bull
                 label_map = {
                     sorted_idx[0]: 'Bear',
                     sorted_idx[1]: 'Neutral',
@@ -124,7 +130,7 @@ def _get_learned_hmm(rebal_dates, prices):
                 }
             else:
                 logging.warning(f"All 5 seeds failed to fit at {d}. Keeping previous model or Neutral.")
-                
+
         if best_model is not None:
             X_infer = data_up_to_t[['log_ret', 'vol']].values
             try:
@@ -134,30 +140,34 @@ def _get_learned_hmm(rebal_dates, prices):
                 regimes[d] = 'Neutral'
         else:
             regimes[d] = 'Neutral'
-            
+
     return regimes
 
 
-def get_regimes(rebal_dates, start_date, end_date, method='fixed_hmm', **kwargs):
+def get_regimes(rebal_dates, start_date, end_date, method='learned_hmm', **kwargs):
     """
     Main entry point for macro regime detection.
-    Supports: 'fixed_hmm', 'learned_hmm', or 'none'
-    Returns: dict mapping rebalance date -> 'Bull'|'Neutral'|'Bear'
+
+    Methods:
+      'fixed_hmm'   — hardcoded Gaussian HMM parameters (ablation baseline)
+      'learned_hmm' — walk-forward bivariate Gaussian HMM (default)
+      'none'        — all dates mapped to 'Neutral' (no regime filter)
+
+    Returns: dict mapping rebalance date -> 'Bull' | 'Neutral' | 'Bear'
     """
     if method == 'none':
         return {d: 'Neutral' for d in rebal_dates}
-        
+
     yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
     logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
     nifty = yf.download('^NSEI', start=start_date, end=end_date, interval='1d', progress=False)
-    
-    # Extract close prices cleanly
+
     if isinstance(nifty.columns, pd.MultiIndex):
         prices = nifty['Close'] if 'Close' in nifty.columns.get_level_values(0) else nifty.iloc[:, -1]
     else:
         prices = nifty['Close'] if 'Close' in nifty.columns else nifty.iloc[:, -1]
-        
+
     prices = prices.squeeze().ffill()
 
     if method == 'fixed_hmm':
@@ -165,4 +175,4 @@ def get_regimes(rebal_dates, start_date, end_date, method='fixed_hmm', **kwargs)
     elif method == 'learned_hmm':
         return _get_learned_hmm(rebal_dates, prices)
     else:
-        raise ValueError(f"Unknown regime method: {method}")
+        raise ValueError(f"Unknown regime method: '{method}'. Choose from: fixed_hmm, learned_hmm, none")

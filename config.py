@@ -19,11 +19,8 @@ LOOKBACK_WINDOWS = [1, 6, 12, 36, 60]
 DATA_START = '2008-01-01'
 DATA_END = '2025-04-01'
 
-# Transaction cost assumptions
-# Follow notebook convention: 10 bps per side (20 bps round-trip).
+# Transaction cost assumptions: 10 bps per side (20 bps round-trip)
 TRANSACTION_COST_BPS = 10
-SHORT_BORROW_COST_ANNUAL = 0.08 # 8% annualized for F&O margin + slippage proxy
-STT_SELL_BPS = 2.5              # Securities Transaction Tax on sell side (delivery)
 
 # Risk-free rate proxy (India 10Y govt bond, approximate)
 RISK_FREE_ANNUAL = 0.07

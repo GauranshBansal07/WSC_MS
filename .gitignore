@@ -32,3 +32,4 @@ catboost_info/
 
 # Jupyter
 .ipynb_checkpoints/
+venv/
