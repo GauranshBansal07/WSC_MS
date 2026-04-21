@@ -4,16 +4,30 @@ from catboost import CatBoostClassifier
 import logging
 
 from config import (
-    TRANSACTION_COST_BPS, RISK_FREE_ANNUAL
+    TRANSACTION_COST_BPS, RISK_FREE_ANNUAL, LEVERAGE_COST_ANNUAL
 )
 
 # ---- Portfolio constants --------------------------------------------------
 PROB_THRESHOLD = 0.55
 TX_COST_SIDE = TRANSACTION_COST_BPS / 10000.0    # bps per side
 
-# Regime-based long sizing and stop-loss thresholds
+# Regime-based long sizing and stop-loss thresholds (directional scheme)
 REGIME_SIZE = {'Bull': 10, 'Neutral': 4, 'Bear': 3}
 REGIME_STOP = {'Bull': -0.10, 'Neutral': -0.07, 'Bear': -0.05}
+
+# Barroso-Santa-Clara 2015 vol-scale constants
+VOLSCALE_N      = 10     # Fixed book size — always top-10 by pred_prob
+VOLSCALE_STOP   = -0.10  # Fixed stop (same as Bull regime)
+VOLSCALE_WINDOW = 126    # Trailing realized-vol window (≈ 6 months trading days)
+VOLSCALE_CAP    = 1.25   # Max gross exposure (25% leverage)
+VOLSCALE_FLOOR  = 0.30   # Min gross exposure (70% cash)
+
+# Hybrid HMM + vol-scaling constants (Formulations A, B, C)
+# Three pre-committed regime-specific target vols — do NOT tune post-results
+HYBRID_TARGET_VOL = {'LowVol': 0.24, 'MedVol': 0.20, 'HighVol': 0.12}
+# Formulation A: position ratio per regime (LowVol=full, MedVol=60%, HighVol=30%)
+HYBRID_POS_RATIO  = {'LowVol': 1.0,  'MedVol': 0.6,  'HighVol': 0.3}
+
 
 # ---- Feature panel --------------------------------------------------------
 def build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks):
@@ -87,34 +101,187 @@ def run_expanding_window(stacked_data, min_train_months=60):
     return pd.concat(results, axis=0)
 
 
+# ---- Barroso-Santa-Clara 2015 helpers ------------------------------------
+def compute_daily_strategy_returns(res_df, daily_prices, n_positions=VOLSCALE_N):
+    """
+    Generate daily equal-weight portfolio returns for the unscaled n-name
+    long-only book.  Used as the raw return series for BSC vol estimation.
+
+    Between each monthly rebalance, the top-n tickers by pred_prob are held
+    with equal weight.  Returns a daily pd.Series indexed by date.
+    """
+    all_dates = sorted(res_df['date'].unique())
+    all_daily_rets = {}
+
+    for i, date in enumerate(all_dates):
+        group = res_df[res_df['date'] == date]
+        tickers = group.nlargest(n_positions, 'pred_prob')['ticker'].tolist()
+        held = [t for t in tickers if t in daily_prices.columns]
+        if not held:
+            continue
+
+        next_date = all_dates[i + 1] if i + 1 < len(all_dates) else None
+        if next_date is None:
+            continue
+
+        window = daily_prices.loc[date:next_date, held]
+        daily_ret = window.pct_change().mean(axis=1).dropna()
+        for d, r in daily_ret.items():
+            all_daily_rets[d] = r
+
+    return pd.Series(all_daily_rets).sort_index()
+
+
+def compute_target_vol(res_df, daily_prices,
+                       n_positions=VOLSCALE_N, vol_window=VOLSCALE_WINDOW):
+    """
+    Barroso-Santa-Clara 2015 — calibration step.
+
+    Target vol = MEDIAN of the 126-day rolling annualized realized vol of the
+    unscaled (equal-weight top-N) momentum strategy.  Using the median rather
+    than the mean is robust to crisis spikes and matches the paper's primary
+    specification.  The target is computed once across the full OOS window —
+    no look-ahead because we're using it as a fixed scaling denominator, not
+    as a per-period forecast of future vol.
+
+    Returns:
+        target_vol  — float, annualized
+        daily_rets  — pd.Series, daily strategy returns (for per-rebalance scaling)
+    """
+    daily_rets = compute_daily_strategy_returns(res_df, daily_prices, n_positions)
+    rolling_vol = daily_rets.rolling(vol_window).std() * np.sqrt(252)
+    target_vol = float(rolling_vol.dropna().median())
+    return target_vol, daily_rets
+
+
 # ---- Portfolio engine (long-only) ----------------------------------------
-def simulate_portfolio(res_df, regimes, daily_prices):
+def simulate_portfolio(res_df, regimes, daily_prices,
+                       sizing_scheme='directional',
+                       volscale_params=None,
+                       lev_cost=None):
     """
     Long-only rebalancer with daily path stop-loss tracing.
 
-    Regime controls position count and stop-loss tightness:
-      Bull  -> up to 10 longs, -10% hard stop
-      Neutral -> up to 4 longs, -7% hard stop
-      Bear  -> up to 3 longs, -5% hard stop
+    sizing_scheme options:
+      'directional' : HMM regime label controls position count {Bull:10, Neutral:4, Bear:3}
+      'volscale'    : Barroso-Santa-Clara 2015 — fixed 10-name book, continuous exposure scaling
+      'hybrid_a'    : HMM LowVol/MedVol/HighVol caps gross via pos_ratio, vol-scaling within
+      'hybrid_b'    : HMM state selects regime-specific target vol {0.24, 0.20, 0.12}
+      'hybrid_c'    : HMM posterior-weighted target vol (soft blend of the three)
 
-    Returns: (monthly returns Series, holdings count list)
+    volscale_params dict keys (required for non-directional):
+      'daily_rets'   — pd.Series of daily strategy returns for realized vol
+      'target_vol'   — float (pure volscale only)
+      'regime_info'  — dict[date -> {'label': str, 'probs': array}] (hybrid only)
+
+    Returns:
+      (port_returns, holdings_counts, extra)
+      extra = None for 'directional',
+              dict(scaling_factors, labels, target_vols_c) otherwise
     """
+    if sizing_scheme != 'directional' and volscale_params is None:
+        raise ValueError(f"sizing_scheme='{sizing_scheme}' requires volscale_params dict.")
+
+    _lev_cost = lev_cost if lev_cost is not None else LEVERAGE_COST_ANNUAL
+
     returns, holdings_counts, rebal_dates = [], [], []
+    scaling_factors_track, labels_track, target_vols_c_track, turnover_track = [], [], [], []
     prev_weights = {}
     all_dates = sorted(res_df['date'].unique())
 
     for i, date in enumerate(all_dates):
         group = res_df[res_df['date'] == date]
         rebal_dates.append(pd.Timestamp(date))
-        regime = regimes.get(date, 'Neutral')
 
-        size = REGIME_SIZE.get(regime, 4)
-        stop = REGIME_STOP.get(regime, -0.07)
-        weight_per_leg = 1.0 / size if size > 0 else 0.0
+        # ---- Realized vol (shared across all volscale-family schemes) ------
+        realized_vol = None
+        if sizing_scheme != 'directional':
+            daily_rets  = volscale_params['daily_rets']
+            past_rets   = daily_rets[daily_rets.index < pd.Timestamp(date)]
+            if len(past_rets) < VOLSCALE_WINDOW:
+                logging.warning(
+                    f"[{sizing_scheme}] Warmup: {len(past_rets)} days before {date} "
+                    f"(need {VOLSCALE_WINDOW}). Using scale=1.0."
+                )
+                realized_vol = None   # triggers scale=1.0 fallback below
+            else:
+                realized_vol = past_rets.iloc[-VOLSCALE_WINDOW:].std() * np.sqrt(252)
+
+        # ---- Per-scheme gross exposure & stop determination ----------------
+        if sizing_scheme == 'directional':
+            regime = regimes.get(date, 'Neutral')
+            size   = REGIME_SIZE.get(regime, 4)
+            stop   = REGIME_STOP.get(regime, -0.07)
+            weight_per_leg = 1.0 / size if size > 0 else 0.0
+            gross_exposure = None    # not used in directional path
+
+        elif sizing_scheme == 'volscale':
+            # Barroso-Santa-Clara 2015 — Eq.6: w_t = σ* / h_t
+            target_vol = volscale_params['target_vol']
+            if realized_vol is None:
+                sf = 1.0
+            else:
+                sf = min(VOLSCALE_CAP, max(VOLSCALE_FLOOR, target_vol / realized_vol))
+            scaling_factors_track.append(sf)
+            labels_track.append(None)
+            target_vols_c_track.append(None)
+            size   = VOLSCALE_N
+            stop   = VOLSCALE_STOP
+            gross_exposure   = sf
+            weight_per_leg   = gross_exposure / size
+
+        elif sizing_scheme == 'hybrid_a':
+            # Formulation A: pos_ratio from HMM label × BSC scaling (target_vol_med fixed)
+            ri    = volscale_params['regime_info'].get(date, {'label': 'MedVol', 'probs': None})
+            label = ri['label']
+            pos_ratio = HYBRID_POS_RATIO.get(label, 0.6)
+            tv = HYBRID_TARGET_VOL['MedVol']   # fixed at 0.20 for A
+            sf = 1.0 if realized_vol is None else \
+                 min(VOLSCALE_CAP, max(VOLSCALE_FLOOR, tv / realized_vol))
+            gross_exposure = pos_ratio * sf
+            scaling_factors_track.append(gross_exposure)
+            labels_track.append(label)
+            target_vols_c_track.append(None)
+            size   = VOLSCALE_N
+            stop   = VOLSCALE_STOP
+            weight_per_leg = gross_exposure / size
+
+        elif sizing_scheme == 'hybrid_b':
+            # Formulation B: HMM state selects regime-specific target vol
+            ri    = volscale_params['regime_info'].get(date, {'label': 'MedVol', 'probs': None})
+            label = ri['label']
+            tv    = HYBRID_TARGET_VOL.get(label, 0.20)
+            sf = 1.0 if realized_vol is None else \
+                 min(VOLSCALE_CAP, max(VOLSCALE_FLOOR, tv / realized_vol))
+            scaling_factors_track.append(sf)
+            labels_track.append(label)
+            target_vols_c_track.append(None)
+            size   = VOLSCALE_N
+            stop   = VOLSCALE_STOP
+            gross_exposure   = sf
+            weight_per_leg   = sf / size
+
+        elif sizing_scheme == 'hybrid_c':
+            # Formulation C: posterior-weighted target vol (soft regime blend)
+            ri    = volscale_params['regime_info'].get(date, {'label': 'MedVol',
+                                                               'probs': np.array([0.,1.,0.])})
+            probs = ri['probs']   # [P_LowVol, P_MedVol, P_HighVol]
+            tv    = float(probs[0] * 0.24 + probs[1] * 0.20 + probs[2] * 0.12)
+            sf = 1.0 if realized_vol is None else \
+                 min(VOLSCALE_CAP, max(VOLSCALE_FLOOR, tv / realized_vol))
+            scaling_factors_track.append(sf)
+            labels_track.append(ri['label'])
+            target_vols_c_track.append(tv)
+            size   = VOLSCALE_N
+            stop   = VOLSCALE_STOP
+            gross_exposure   = sf
+            weight_per_leg   = sf / size
+
+        else:
+            raise ValueError(f"Unknown sizing_scheme: '{sizing_scheme}'")
 
         buys = group[group['pred_prob'] >= PROB_THRESHOLD].nlargest(size, 'pred_prob')
         holdings_counts.append(len(buys))
-
         curr_weights = {t: weight_per_leg for t in buys['ticker']}
 
         next_date = all_dates[i + 1] if i + 1 < len(all_dates) else None
@@ -142,19 +309,37 @@ def simulate_portfolio(res_df, regimes, daily_prices):
                 ret = group[group['ticker'] == ticker]['fwd_return'].values[0]
                 invested_return += max(float(ret), float(stop)) * weight_per_leg
 
-        cash_weight = max(0.0, 1.0 - len(buys) * weight_per_leg)
-        cash_return = cash_weight * rf_period
-        gross = invested_return + cash_return
+        # Cash / leverage handling
+        if sizing_scheme != 'directional':
+            actual_gross = len(buys) * weight_per_leg
+            if actual_gross > 1.0:
+                lev_portion = actual_gross - 1.0
+                lev_drag = lev_portion * _lev_cost * (days_held / 365.25)
+                gross = invested_return - lev_drag
+            else:
+                cash_weight = 1.0 - actual_gross
+                gross = invested_return + cash_weight * rf_period
+        else:
+            cash_weight = max(0.0, 1.0 - len(buys) * weight_per_leg)
+            gross = invested_return + cash_weight * rf_period
 
         all_tickers = set(prev_weights.keys()).union(curr_weights.keys())
-        turnover = sum(abs(curr_weights.get(t, 0.0) - prev_weights.get(t, 0.0)) for t in all_tickers)
+        turnover = sum(abs(curr_weights.get(t, 0.0) - prev_weights.get(t, 0.0))
+                       for t in all_tickers)
+        turnover_track.append(turnover)
         tx_cost = turnover * TX_COST_SIDE
 
         net = gross - tx_cost
         returns.append(net)
         prev_weights = curr_weights
 
-    return pd.Series(returns, index=pd.DatetimeIndex(rebal_dates)), holdings_counts
+    extra = {
+        'turnover_track': turnover_track,
+        'scaling_factors': scaling_factors_track if sizing_scheme != 'directional' else None,
+        'labels': labels_track if sizing_scheme != 'directional' else None,
+        'target_vols_c': target_vols_c_track if sizing_scheme != 'directional' else None,
+    }
+    return pd.Series(returns, index=pd.DatetimeIndex(rebal_dates)), holdings_counts, extra
 
 
 def performance_stats(port_ret, periods_per_year=12):

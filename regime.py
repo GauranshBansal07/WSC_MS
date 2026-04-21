@@ -176,3 +176,125 @@ def get_regimes(rebal_dates, start_date, end_date, method='learned_hmm', **kwarg
         return _get_learned_hmm(rebal_dates, prices)
     else:
         raise ValueError(f"Unknown regime method: '{method}'. Choose from: fixed_hmm, learned_hmm, none")
+
+
+# ---- Hybrid HMM: vol-sorted states + full posteriors ---------------------
+
+def _get_learned_hmm_vol_posteriors(rebal_dates, prices):
+    """
+    Walk-forward bivariate Gaussian HMM identical to _get_learned_hmm, EXCEPT:
+      - States sorted by fitted vol mean ASCENDING: LowVol < MedVol < HighVol
+        This matches what the model actually learns (volatility clusters).
+      - Returns full posterior probability vector [P_LowVol, P_MedVol, P_HighVol]
+        alongside the argmax label at each rebalance date.
+
+    Used by Formulations A, B, C which need either the argmax label or the
+    soft posterior for regime-dependent vol scaling.
+
+    Returns:
+        dict[date -> {'label': str, 'probs': np.array([P_low, P_med, P_high])}]
+    """
+    try:
+        from hmmlearn.hmm import GaussianHMM
+    except ImportError:
+        logging.warning("hmmlearn not installed. Returning MedVol fallback.")
+        return {d: {'label': 'MedVol', 'probs': np.array([0.0, 1.0, 0.0])}
+                for d in rebal_dates}
+
+    df = pd.DataFrame(prices)
+    df.columns = ['Close']
+    df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
+    df['vol'] = df['log_ret'].rolling(20).std()
+    df = df.dropna()
+
+    regime_data = {}
+    last_fit_date = None
+    best_model = None
+    sorted_idx = None       # state-index order: [LowVol_idx, MedVol_idx, HighVol_idx]
+    label_map = None        # model-state-index -> label string
+    warned_data = False
+    _FALLBACK = {'label': 'MedVol', 'probs': np.array([0.0, 1.0, 0.0])}
+
+    for d in rebal_dates:
+        data_up_to_t = df.loc[df.index < d]
+
+        if len(data_up_to_t) < 252:
+            if not warned_data:
+                logging.warning(f"Not enough data before {d} for vol-posterior HMM. Using MedVol.")
+                warned_data = True
+            regime_data[d] = _FALLBACK.copy()
+            continue
+
+        if last_fit_date is None or (d - last_fit_date).days >= 365:
+            X_train = data_up_to_t[['log_ret', 'vol']].values
+            best_score = -np.inf
+            current_best = None
+            for seed in range(5):
+                model = GaussianHMM(n_components=3, covariance_type='full',
+                                    n_iter=100, random_state=seed)
+                try:
+                    model.fit(X_train)
+                    score = model.score(X_train)
+                    if score > best_score:
+                        best_score = score
+                        current_best = model
+                except Exception:
+                    continue
+
+            if current_best is not None:
+                best_model = current_best
+                last_fit_date = d
+                # Sort by volatility feature mean ASCENDING -> LowVol, MedVol, HighVol
+                mean_vols = best_model.means_[:, 1]
+                sorted_idx = np.argsort(mean_vols)   # sorted_idx[0] = model-index of lowest vol state
+                label_map = {
+                    int(sorted_idx[0]): 'LowVol',
+                    int(sorted_idx[1]): 'MedVol',
+                    int(sorted_idx[2]): 'HighVol',
+                }
+            else:
+                logging.warning(f"All 5 seeds failed at {d}. Keeping previous model.")
+
+        if best_model is not None:
+            X_infer = data_up_to_t[['log_ret', 'vol']].values
+            try:
+                state_seq = best_model.predict(X_infer)
+                posteriors_raw = best_model.predict_proba(X_infer)
+                last_post = posteriors_raw[-1]         # shape (3,), model-state order
+                # Remap to [P_LowVol, P_MedVol, P_HighVol]
+                probs = np.array([
+                    last_post[int(sorted_idx[0])],
+                    last_post[int(sorted_idx[1])],
+                    last_post[int(sorted_idx[2])],
+                ])
+                regime_data[d] = {'label': label_map[int(state_seq[-1])], 'probs': probs}
+            except Exception:
+                regime_data[d] = _FALLBACK.copy()
+        else:
+            regime_data[d] = _FALLBACK.copy()
+
+    return regime_data
+
+
+def get_regime_posteriors(rebal_dates, start_date, end_date):
+    """
+    Public entry point: returns vol-sorted HMM state label + posterior probs
+    at each rebalance date.
+
+    Returns:
+        dict[date -> {'label': 'LowVol'|'MedVol'|'HighVol',
+                      'probs': np.array([P_LowVol, P_MedVol, P_HighVol])}]
+    """
+    import yfinance as yf
+    yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
+    logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
+    nifty = yf.download('^NSEI', start=start_date, end=end_date, interval='1d', progress=False)
+    if isinstance(nifty.columns, pd.MultiIndex):
+        prices = nifty['Close'] if 'Close' in nifty.columns.get_level_values(0) else nifty.iloc[:, -1]
+    else:
+        prices = nifty['Close'] if 'Close' in nifty.columns else nifty.iloc[:, -1]
+    prices = prices.squeeze().ffill()
+
+    return _get_learned_hmm_vol_posteriors(rebal_dates, prices)
+

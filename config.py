@@ -22,5 +22,9 @@ DATA_END = '2025-04-01'
 # Transaction cost assumptions: 10 bps per side (20 bps round-trip)
 TRANSACTION_COST_BPS = 10
 
+# Leverage cost for vol-scaled gross exposure > 1.0 (Nifty futures roll cost proxy)
+# Barroso-Santa-Clara 2015 implementation — Indian market adjustment
+LEVERAGE_COST_ANNUAL = 0.05    # 5% annualized (primary spec)
+
 # Risk-free rate proxy (India 10Y govt bond, approximate)
 RISK_FREE_ANNUAL = 0.07
