@@ -155,10 +155,83 @@ def compute_target_vol(res_df, daily_prices,
 
 
 # ---- Portfolio engine (long-only) ----------------------------------------
+# ---- Weighting helpers ----------------------------------------------------
+def _compute_weights(buys, daily_prices, date, method='equal', historical_returns=None):
+    """
+    Compute per-ticker portfolio weights using the specified method.
+    Normalized so sum(weights) = 1.0 (or 0 if no buys).
+    """
+    tickers = buys['ticker'].values
+    n = len(tickers)
+    if n == 0:
+        return {}
+
+    if method == 'equal':
+        w = 1.0 / n
+        return {t: w for t in tickers}
+
+    elif method == 'probability':
+        probs = buys['pred_prob'].values
+        weights = probs / probs.sum()
+        return {t: float(w) for t, w in zip(tickers, weights)}
+
+    elif method == 'inverse_vol':
+        # 60-day trailing realized volatility
+        vol_lookback = daily_prices.loc[:date].tail(60)
+        vols = []
+        for t in tickers:
+            if t in vol_lookback.columns:
+                v = vol_lookback[t].pct_change().std()
+                vols.append(max(v, 1e-6))  # floor to avoid division by zero
+            else:
+                vols.append(0.02)  # default 2% daily vol
+        vols = np.array(vols)
+        inv_vol = 1.0 / vols
+        weights = inv_vol / inv_vol.sum()
+        return {t: float(w) for t, w in zip(tickers, weights)}
+
+    elif method == 'prob_invvol':
+        # Probability x inverse volatility
+        probs = buys['pred_prob'].values
+        vol_lookback = daily_prices.loc[:date].tail(60)
+        vols = []
+        for t in tickers:
+            if t in vol_lookback.columns:
+                v = vol_lookback[t].pct_change().std()
+                vols.append(max(v, 1e-6))
+            else:
+                vols.append(0.02)
+        vols = np.array(vols)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            raw = probs * (1.0 / vols)
+        if raw.sum() == 0:
+            weights = np.ones(n) / n
+        else:
+            weights = raw / raw.sum()
+        return {t: float(w) for t, w in zip(tickers, weights)}
+
+    elif method == 'kelly':
+        # Fractional Kelly (half-Kelly)
+        kelly_weights = []
+        for idx, row in buys.iterrows():
+            p = row['pred_prob']
+            b = 1.0
+            k = (p * b - (1 - p)) / b
+            k = max(k, 0.0)
+            kelly_weights.append(0.5 * k)
+        kelly_weights = np.array(kelly_weights)
+        if kelly_weights.sum() > 0:
+            weights = kelly_weights / kelly_weights.sum()
+        else:
+            weights = np.ones(n) / n
+        return {t: float(w) for t, w in zip(tickers, weights)}
+
+    else:
+        raise ValueError(f"Unknown weighting method: '{method}'")
+
 def simulate_portfolio(res_df, regimes, daily_prices,
                        sizing_scheme='directional',
-                       volscale_params=None,
-                       lev_cost=None):
+                       volscale_params=None, lev_cost=None, weighting='prob_invvol'):
     """
     Long-only rebalancer with daily path stop-loss tracing.
 
@@ -282,7 +355,15 @@ def simulate_portfolio(res_df, regimes, daily_prices,
 
         buys = group[group['pred_prob'] >= PROB_THRESHOLD].nlargest(size, 'pred_prob')
         holdings_counts.append(len(buys))
-        curr_weights = {t: weight_per_leg for t in buys['ticker']}
+        
+        # Calculate relative weights summing to 1.0 (if possible)
+        rel_weights = _compute_weights(buys, daily_prices, date, method=weighting)
+        
+        # Scale relative weights to intended gross exposure for this rebalance.
+        # Previously: curr_weights = {t: weight_per_leg for t in buys['ticker']}
+        # To maintain exact equivalence, sum of weights should be len(buys) * weight_per_leg
+        target_total_weight = len(buys) * weight_per_leg
+        curr_weights = {t: w * target_total_weight for t, w in rel_weights.items()}
 
         next_date = all_dates[i + 1] if i + 1 < len(all_dates) else None
         if next_date is not None:
@@ -296,31 +377,32 @@ def simulate_portfolio(res_df, regimes, daily_prices,
         invested_return = 0.0
 
         for ticker in buys['ticker'].values:
+            w = curr_weights.get(ticker, 0.0)
             if ticker in d_window.columns and not d_window[ticker].dropna().empty:
                 valid_prices = d_window[ticker].dropna()
                 start_price = valid_prices.iloc[0]
                 if start_price > 0:
                     path = valid_prices / start_price - 1.0
                     if (path <= stop).any():
-                        invested_return += stop * weight_per_leg
+                        invested_return += stop * w
                     else:
-                        invested_return += path.iloc[-1] * weight_per_leg
+                        invested_return += path.iloc[-1] * w
             else:
                 ret = group[group['ticker'] == ticker]['fwd_return'].values[0]
-                invested_return += max(float(ret), float(stop)) * weight_per_leg
+                invested_return += max(float(ret), float(stop)) * w
 
         # Cash / leverage handling
+        total_invested = sum(curr_weights.values())
         if sizing_scheme != 'directional':
-            actual_gross = len(buys) * weight_per_leg
-            if actual_gross > 1.0:
-                lev_portion = actual_gross - 1.0
+            if total_invested > 1.0:
+                lev_portion = total_invested - 1.0
                 lev_drag = lev_portion * _lev_cost * (days_held / 365.25)
                 gross = invested_return - lev_drag
             else:
-                cash_weight = 1.0 - actual_gross
+                cash_weight = 1.0 - total_invested
                 gross = invested_return + cash_weight * rf_period
         else:
-            cash_weight = max(0.0, 1.0 - len(buys) * weight_per_leg)
+            cash_weight = max(0.0, 1.0 - total_invested)
             gross = invested_return + cash_weight * rf_period
 
         all_tickers = set(prev_weights.keys()).union(curr_weights.keys())

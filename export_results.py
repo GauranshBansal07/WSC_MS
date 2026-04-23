@@ -46,6 +46,9 @@ def main():
     parser.add_argument('--regime',  type=str, default='learned_hmm',
                         choices=['learned_hmm', 'fixed_hmm', 'none'],
                         help="HMM regime method (default: learned_hmm)")
+    parser.add_argument('--weighting', type=str, default='prob_invvol',
+                        choices=['equal', 'probability', 'inverse_vol', 'prob_invvol', 'kelly'],
+                        help="Cross-sectional position weighting method (default: prob_invvol)")
     args = parser.parse_args()
 
     # ---- 1) Load data (uses local cache — no downloads for price data) -----
@@ -68,23 +71,23 @@ def main():
 
     # ---- 2) Run strategy ---------------------------------------------------
     if args.sizing == 'directional':
-        print(f"Running HMM directional ({args.regime})...")
+        print(f"Running HMM directional ({args.regime}) with {args.weighting} weighting...")
         regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=args.regime)
         port, counts, extra = simulate_portfolio(
-            res_df, regimes, daily_prices, sizing_scheme='directional'
+            res_df, regimes, daily_prices, sizing_scheme='directional', weighting=args.weighting
         )
-        label = f"HMM directional ({args.regime})"
+        label = f"HMM directional ({args.regime}) - {args.weighting}"
 
     else:  # volscale
-        print("Running pure vol scaling (126d, target_vol=0.20)...")
+        print(f"Running pure vol scaling (126d, target_vol=0.20) with {args.weighting} weighting...")
         target_vol, daily_rets = compute_target_vol(res_df, daily_prices)
         target_vol = 0.20  # fixed spec
         vp = {'target_vol': target_vol, 'daily_rets': daily_rets}
         port, counts, extra = simulate_portfolio(
             res_df, {}, daily_prices,
-            sizing_scheme='volscale', volscale_params=vp
+            sizing_scheme='volscale', volscale_params=vp, weighting=args.weighting
         )
-        label = "Pure vol scaling (126d)"
+        label = f"Pure vol scaling (126d) - {args.weighting}"
 
     # ---- 3) Print full performance summary ---------------------------------
     stats = performance_stats(port, periods_per_year=12)
