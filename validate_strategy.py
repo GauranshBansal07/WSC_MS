@@ -600,7 +600,7 @@ def sensitivity_stoploss(res_df, regimes, daily_prices, periods_per_year, label)
 
 def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, label):
     """
-    Sweep Bull/Neutral sizing combos and measure Sharpe in a heatmap.
+    Sweep LowVol/MedVol sizing combos and measure Sharpe in a heatmap.
     """
     print("\n  ── Parameter Sensitivity: Regime Sizing ──")
     import engine as eng
@@ -613,14 +613,14 @@ def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, l
 
     for i, n_size in enumerate(neutral_sizes):
         for j, b_size in enumerate(bull_sizes):
-            eng.REGIME_SIZE['Bull'] = b_size
-            eng.REGIME_SIZE['Neutral'] = n_size
-            eng.REGIME_SIZE['Bear'] = max(2, n_size - 1)
+            eng.REGIME_SIZE['LowVol'] = b_size
+            eng.REGIME_SIZE['MedVol'] = n_size
+            eng.REGIME_SIZE['HighVol'] = max(2, n_size - 1)
 
             port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
             s = performance_stats(port, periods_per_year)
             heatmap_data[i, j] = s['sharpe']
-            print(f"    Bull={b_size:2d}  Neutral={n_size}  Bear={max(2, n_size-1)}  ->  Sharpe={s['sharpe']:.3f}")
+            print(f"    LowVol={b_size:2d}  MedVol={n_size}  HighVol={max(2, n_size-1)}  ->  Sharpe={s['sharpe']:.3f}")
 
     # Restore
     for regime in original_sizes:
@@ -635,15 +635,15 @@ def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, l
                 linewidths=1, linecolor='#30363d', ax=ax,
                 cbar_kws={'label': 'Sharpe Ratio'})
 
-    ax.set_xlabel('Bull Regime — # Holdings', fontsize=12)
-    ax.set_ylabel('Neutral Regime — # Holdings', fontsize=12)
+    ax.set_xlabel('LowVol Regime — # Holdings', fontsize=12)
+    ax.set_ylabel('MedVol Regime — # Holdings', fontsize=12)
     ax.set_title(f'{label} — Sensitivity: Regime-Based Position Sizing\n'
-                 f'(Bear = Neutral - 1, min 2)',
+                 f'(HighVol = MedVol - 1, min 2)',
                  fontsize=13, fontweight='bold', pad=12)
 
     # Mark default
-    default_b = bull_sizes.index(original_sizes['Bull']) if original_sizes['Bull'] in bull_sizes else -1
-    default_n = neutral_sizes.index(original_sizes['Neutral']) if original_sizes['Neutral'] in neutral_sizes else -1
+    default_b = bull_sizes.index(original_sizes['LowVol']) if original_sizes.get('LowVol', -1) in bull_sizes else -1
+    default_n = neutral_sizes.index(original_sizes['MedVol']) if original_sizes.get('MedVol', -1) in neutral_sizes else -1
     if default_b >= 0 and default_n >= 0:
         ax.add_patch(plt.Rectangle((default_b, default_n), 1, 1,
                                     fill=False, edgecolor=C_ORANGE, linewidth=3))
@@ -658,10 +658,10 @@ def plot_regime_performance(port_returns, regimes, label):
     print("\n  ── Regime Performance Decomposition ──")
 
     regime_series = pd.Series(regimes)
-    regime_aligned = regime_series.reindex(port_returns.index).ffill().fillna('Neutral')
+    regime_aligned = regime_series.reindex(port_returns.index).ffill().fillna('MedVol')
 
     regime_stats = {}
-    for regime in ['Bull', 'Neutral', 'Bear']:
+    for regime in ['LowVol', 'MedVol', 'HighVol']:
         mask = regime_aligned == regime
         if mask.sum() == 0:
             continue
@@ -683,7 +683,7 @@ def plot_regime_performance(port_returns, regimes, label):
 
     # Plot
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    regime_colors = {'Bull': C_GREEN, 'Neutral': C_ACCENT, 'Bear': C_RED}
+    regime_colors = {'LowVol': C_GREEN, 'MedVol': C_ACCENT, 'HighVol': C_RED}
     regimes_present = list(regime_stats.keys())
 
     # Mean return

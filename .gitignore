@@ -15,7 +15,9 @@ __pycache__/
 nifty_500_5min/
 
 # Model outputs
-output/
+output/*.csv
+!output/*.png
+!output/.gitkeep
 catboost_info/
 
 # macOS
@@ -34,4 +36,3 @@ catboost_info/
 .ipynb_checkpoints/
 venv/
 .tmp/
-output/
