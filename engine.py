@@ -231,16 +231,18 @@ def _compute_weights(buys, daily_prices, date, method='equal', historical_return
 
 def simulate_portfolio(res_df, regimes, daily_prices,
                        sizing_scheme='directional',
-                       volscale_params=None, lev_cost=None, weighting='prob_invvol'):
+                       volscale_params=None, lev_cost=None, weighting='prob_invvol',
+                       regime_sizes=None):
     """
     Long-only rebalancer with daily path stop-loss tracing.
 
     sizing_scheme options:
       'directional' : HMM regime label controls position count {Bull:10, Neutral:4, Bear:3}
-      'volscale'    : Barroso-Santa-Clara 2015 — fixed 10-name book, continuous exposure scaling
-      'hybrid_a'    : HMM LowVol/MedVol/HighVol caps gross via pos_ratio, vol-scaling within
-      'hybrid_b'    : HMM state selects regime-specific target vol {0.24, 0.20, 0.12}
-      'hybrid_c'    : HMM posterior-weighted target vol (soft blend of the three)
+      'volscale'      : Barroso-Santa-Clara 2015 — fixed 10-name book, continuous exposure scaling
+      'hybrid_a'      : HMM LowVol/MedVol/HighVol caps gross via pos_ratio, vol-scaling within
+      'hybrid_b'      : HMM state selects regime-specific target vol {0.24, 0.20, 0.12}
+      'hybrid_c'      : HMM posterior-weighted target vol (soft blend of the three)
+      'hmm_vol_size'  : HMM-covariance-derived sizes (1/σ normalized). Requires regime_sizes dict.
 
     volscale_params dict keys (required for non-directional):
       'daily_rets'   — pd.Series of daily strategy returns for realized vol
@@ -252,8 +254,10 @@ def simulate_portfolio(res_df, regimes, daily_prices,
       extra = None for 'directional',
               dict(scaling_factors, labels, target_vols_c) otherwise
     """
-    if sizing_scheme != 'directional' and volscale_params is None:
+    if sizing_scheme not in ('directional', 'hmm_vol_size') and volscale_params is None:
         raise ValueError(f"sizing_scheme='{sizing_scheme}' requires volscale_params dict.")
+    if sizing_scheme == 'hmm_vol_size' and regime_sizes is None:
+        raise ValueError("sizing_scheme='hmm_vol_size' requires regime_sizes dict from get_regimes_and_vol_sizes().")
 
     _lev_cost = lev_cost if lev_cost is not None else LEVERAGE_COST_ANNUAL
 
@@ -268,7 +272,7 @@ def simulate_portfolio(res_df, regimes, daily_prices,
 
         # ---- Realized vol (shared across all volscale-family schemes) ------
         realized_vol = None
-        if sizing_scheme != 'directional':
+        if sizing_scheme not in ('directional', 'hmm_vol_size'):
             daily_rets  = volscale_params['daily_rets']
             past_rets   = daily_rets[daily_rets.index < pd.Timestamp(date)]
             if len(past_rets) < VOLSCALE_WINDOW:
@@ -281,9 +285,12 @@ def simulate_portfolio(res_df, regimes, daily_prices,
                 realized_vol = past_rets.iloc[-VOLSCALE_WINDOW:].std() * np.sqrt(252)
 
         # ---- Per-scheme gross exposure & stop determination ----------------
-        if sizing_scheme == 'directional':
+        if sizing_scheme in ('directional', 'hmm_vol_size'):
             regime = regimes.get(date, 'Neutral')
-            size   = REGIME_SIZE.get(regime, 4)
+            if sizing_scheme == 'hmm_vol_size' and regime_sizes is not None:
+                size = regime_sizes.get(date, REGIME_SIZE.get(regime, 4))
+            else:
+                size = REGIME_SIZE.get(regime, 4)
             stop   = REGIME_STOP.get(regime, -0.07)
             weight_per_leg = 1.0 / size if size > 0 else 0.0
             gross_exposure = None    # not used in directional path
