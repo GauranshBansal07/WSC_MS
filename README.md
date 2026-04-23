@@ -94,17 +94,7 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 
 **Critical finding**: the 6M window is the single most important lookback — removing it causes the worst risk-adjusted outcome. The 3M window is detrimental (mean-reversion noise on Indian markets) and its removal gives the global Calmar optimum.
 
-### Extended Universe Results *(⚠ survivorship bias — directional only)*
 
-> OOS from 2020–2025 only; static 2025 Nifty 500 snapshot universe
-
-| Universe | CAGR | Sharpe | Max DD | Calmar |
-|:---|:---:|:---:|:---:|:---:|
-| Nifty 100 Monthly *(clean)* | 29.29% | 1.164 | −10.00% | 2.929 |
-| Nifty 500 Monthly ⚠ | 9.86% | 0.254 | −5.50% | 1.794 |
-| Nifty 250 Weekly ⚠ | 4.82% | −0.258 | −18.66% | 0.259 |
-
-*Run `python3 run_nifty_extended.py` to populate.*
 
 ---
 
