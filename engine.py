@@ -13,7 +13,7 @@ TX_COST_SIDE = TRANSACTION_COST_BPS / 10000.0    # bps per side
 
 # Regime-based long sizing and stop-loss thresholds (directional scheme)
 REGIME_SIZE = {'Bull': 10, 'Neutral': 4, 'Bear': 3}
-REGIME_STOP = {'Bull': -0.10, 'Neutral': -0.07, 'Bear': -0.05}
+REGIME_STOP = {'Bull': -0.07, 'Neutral': -0.06, 'Bear': -0.04}
 
 # Barroso-Santa-Clara 2015 vol-scale constants
 VOLSCALE_N      = 10     # Fixed book size — always top-10 by pred_prob
