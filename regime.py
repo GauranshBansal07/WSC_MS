@@ -298,3 +298,140 @@ def get_regime_posteriors(rebal_dates, start_date, end_date):
 
     return _get_learned_hmm_vol_posteriors(rebal_dates, prices)
 
+
+def get_regimes_and_vol_sizes(rebal_dates, start_date, end_date, max_size=10):
+    """
+    Walk-forward HMM that returns both regime labels AND dynamically computed
+    portfolio sizes proportional to 1/sigma of each fitted HMM state.
+
+    Size formula:
+        inv_vol[state] = 1 / sigma_fitted[state]  (sigma = std of log-return feature)
+        size[state]    = round(inv_vol[state] / max(inv_vol) * max_size)
+        clipped to [2, max_size]
+
+    E.g., if sigma_low=0.007, sigma_med=0.013, sigma_high=0.029:
+        inv_vols   = {143, 77, 34}
+        normalized = {10, 5, 2}  (approx, clipped)
+
+    Returns:
+        regimes     — dict[date -> 'Bull' | 'Neutral' | 'Bear']
+        regime_sizes — dict[date -> int]   (dynamic size at that rebalance date)
+    """
+    try:
+        from hmmlearn.hmm import GaussianHMM
+    except ImportError:
+        logging.warning("hmmlearn not installed. Falling back to static sizes.")
+        fallback_regimes = {d: 'Neutral' for d in rebal_dates}
+        fallback_sizes   = {d: 4 for d in rebal_dates}
+        return fallback_regimes, fallback_sizes
+
+    import yfinance as yf
+    yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
+    logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
+    nifty = yf.download('^NSEI', start=start_date, end=end_date, interval='1d', progress=False)
+    if isinstance(nifty.columns, pd.MultiIndex):
+        prices = nifty['Close'] if 'Close' in nifty.columns.get_level_values(0) else nifty.iloc[:, -1]
+    else:
+        prices = nifty['Close'] if 'Close' in nifty.columns else nifty.iloc[:, -1]
+    prices = prices.squeeze().ffill()
+
+    df = pd.DataFrame(prices)
+    df.columns = ['Close']
+    df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
+    df['vol'] = df['log_ret'].rolling(20).std()
+    df = df.dropna()
+
+    regimes      = {}
+    regime_sizes = {}
+    last_fit_date = None
+    best_model    = None
+    label_map     = None   # model_state_idx -> 'Bull'|'Neutral'|'Bear'
+    size_map      = None   # 'Bull'|'Neutral'|'Bear' -> int
+    warned_data   = False
+
+    for d in rebal_dates:
+        data_up_to_t = df.loc[df.index < d]
+
+        if len(data_up_to_t) < 252:
+            if not warned_data:
+                logging.warning(f"Not enough data for vol-size HMM before {d}. Using defaults.")
+                warned_data = True
+            regimes[d]      = 'Neutral'
+            regime_sizes[d] = 4
+            continue
+
+        # Refit every 12 months (expanding window, 5 seeds)
+        if last_fit_date is None or (d - last_fit_date).days >= 365:
+            X_train    = data_up_to_t[['log_ret', 'vol']].values
+            best_score = -np.inf
+            current_best = None
+            for seed in range(5):
+                model = GaussianHMM(n_components=3, covariance_type='full',
+                                    n_iter=100, random_state=seed)
+                try:
+                    model.fit(X_train)
+                    score = model.score(X_train)
+                    if score > best_score:
+                        best_score   = score
+                        current_best = model
+                except Exception:
+                    continue
+
+            if current_best is not None:
+                best_model    = current_best
+                last_fit_date = d
+
+                # Sort states by mean log-return ASCENDING -> Bear < Neutral < Bull
+                mean_returns = best_model.means_[:, 0]
+                sorted_ret   = np.argsort(mean_returns)   # [bear_idx, neutral_idx, bull_idx]
+                label_map    = {
+                    int(sorted_ret[0]): 'Bear',
+                    int(sorted_ret[1]): 'Neutral',
+                    int(sorted_ret[2]): 'Bull',
+                }
+
+                # Extract per-state log-return std from covariance matrices
+                # covars_ shape: (n_components, 2, 2) for 'full' type
+                # sigma_log_ret = sqrt(covars_[state, 0, 0])
+                state_sigmas = np.array([
+                    np.sqrt(best_model.covars_[i, 0, 0])
+                    for i in range(3)
+                ])
+
+                # Build inv-vol sizes: 1/sigma, normalized so max state gets max_size
+                inv_vols   = 1.0 / (state_sigmas + 1e-9)
+                norm_inv   = inv_vols / inv_vols.max()
+                raw_sizes  = np.round(norm_inv * max_size).astype(int)
+                raw_sizes  = np.clip(raw_sizes, 2, max_size)  # floor at 2
+
+                # Map: label -> dynamic size
+                size_map = {
+                    label_map[int(sorted_ret[2])]: int(raw_sizes[sorted_ret[2]]),  # Bull
+                    label_map[int(sorted_ret[1])]: int(raw_sizes[sorted_ret[1]]),  # Neutral
+                    label_map[int(sorted_ret[0])]: int(raw_sizes[sorted_ret[0]]),  # Bear
+                }
+                logging.info(
+                    f"[{d.date()}] HMM vol-sizes fitted: "
+                    f"Bull={size_map['Bull']}  Neutral={size_map['Neutral']}  Bear={size_map['Bear']}  "
+                    f"(sigmas: {state_sigmas.round(4)})"
+                )
+            else:
+                logging.warning(f"All 5 seeds failed at {d}. Keeping previous model.")
+
+        if best_model is not None:
+            X_infer = data_up_to_t[['log_ret', 'vol']].values
+            try:
+                state_seq  = best_model.predict(X_infer)
+                label      = label_map[int(state_seq[-1])]
+                regimes[d]      = label
+                regime_sizes[d] = size_map.get(label, 4)
+            except Exception:
+                regimes[d]      = 'Neutral'
+                regime_sizes[d] = 4
+        else:
+            regimes[d]      = 'Neutral'
+            regime_sizes[d] = 4
+
+    return regimes, regime_sizes
+

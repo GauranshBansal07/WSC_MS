@@ -33,7 +33,7 @@ from engine import (
     build_stacked_dataset, run_expanding_window,
     simulate_portfolio, compute_target_vol, performance_stats, print_stats
 )
-from regime import get_regimes
+from regime import get_regimes, get_regimes_and_vol_sizes
 
 
 def main():
@@ -41,7 +41,7 @@ def main():
     parser.add_argument('--output',  type=str, default='results.csv',
                         help="Output CSV path (default: results.csv)")
     parser.add_argument('--sizing',  type=str, default='directional',
-                        choices=['directional', 'volscale'],
+                        choices=['directional', 'volscale', 'hmm_vol_size'],
                         help="Sizing scheme (default: directional)")
     parser.add_argument('--regime',  type=str, default='learned_hmm',
                         choices=['learned_hmm', 'fixed_hmm', 'none'],
@@ -77,6 +77,18 @@ def main():
             res_df, regimes, daily_prices, sizing_scheme='directional', weighting=args.weighting
         )
         label = f"HMM directional ({args.regime}) - {args.weighting}"
+
+    elif args.sizing == 'hmm_vol_size':
+        print(f"Running HMM vol-proportional sizing (1/\u03c3 normalized) with {args.weighting} weighting...")
+        regimes, regime_sizes = get_regimes_and_vol_sizes(
+            rebal_dates, padding_start, DATA_END, max_size=10
+        )
+        port, counts, extra = simulate_portfolio(
+            res_df, regimes, daily_prices,
+            sizing_scheme='hmm_vol_size', weighting=args.weighting,
+            regime_sizes=regime_sizes
+        )
+        label = f"HMM vol-size (1/\u03c3) - {args.weighting}"
 
     else:  # volscale
         print(f"Running pure vol scaling (126d, target_vol=0.20) with {args.weighting} weighting...")
