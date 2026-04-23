@@ -120,16 +120,16 @@ def _get_learned_hmm(rebal_dates, prices):
                 best_model = current_best_model
                 last_fit_date = d
 
-                # Sort states by mean return ascending: Bear < Neutral < Bull
-                mean_returns = best_model.means_[:, 0]
-                sorted_idx = np.argsort(mean_returns)
+                # Sort states by vol mean ASCENDING → LowVol < MedVol < HighVol
+                mean_vols = best_model.means_[:, 1]
+                sorted_idx = np.argsort(mean_vols)
                 label_map = {
-                    sorted_idx[0]: 'Bear',
-                    sorted_idx[1]: 'Neutral',
-                    sorted_idx[2]: 'Bull'
+                    sorted_idx[0]: 'LowVol',
+                    sorted_idx[1]: 'MedVol',
+                    sorted_idx[2]: 'HighVol'
                 }
             else:
-                logging.warning(f"All 5 seeds failed to fit at {d}. Keeping previous model or Neutral.")
+                logging.warning(f"All 5 seeds failed to fit at {d}. Keeping previous model or MedVol.")
 
         if best_model is not None:
             X_infer = data_up_to_t[['log_ret', 'vol']].values
@@ -137,9 +137,9 @@ def _get_learned_hmm(rebal_dates, prices):
                 state_seq = best_model.predict(X_infer)
                 regimes[d] = label_map[state_seq[-1]]
             except Exception:
-                regimes[d] = 'Neutral'
+                regimes[d] = 'MedVol'
         else:
-            regimes[d] = 'Neutral'
+            regimes[d] = 'MedVol'
 
     return regimes
 
@@ -153,10 +153,10 @@ def get_regimes(rebal_dates, start_date, end_date, method='learned_hmm', **kwarg
       'learned_hmm' — walk-forward bivariate Gaussian HMM (default)
       'none'        — all dates mapped to 'Neutral' (no regime filter)
 
-    Returns: dict mapping rebalance date -> 'Bull' | 'Neutral' | 'Bear'
+    Returns: dict mapping rebalance date -> 'LowVol' | 'MedVol' | 'HighVol'
     """
     if method == 'none':
-        return {d: 'Neutral' for d in rebal_dates}
+        return {d: 'MedVol' for d in rebal_dates}
 
     yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
     logging.getLogger('yfinance').setLevel(logging.CRITICAL)
