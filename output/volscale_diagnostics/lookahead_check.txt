@@ -1,0 +1,2 @@
+max_abs_error_dynamic_target_vs_history_only=0.000000000000
+expect 0.0 (within floating tolerance)

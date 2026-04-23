@@ -81,8 +81,7 @@ def generate_live_portfolio(index_name):
     fwd_returns.loc[target_date] = 0.0 
 
     stacked = eng.build_stacked_dataset(
-        monthly_prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS,
-        enhanced_features=False
+        monthly_prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS
     )
 
     feature_cols = [c for c in stacked.columns if c.startswith(('mom_', 'zscore_'))]
