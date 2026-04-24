@@ -128,9 +128,8 @@ Per-position trading logs (one CSV row per holding, suitable for manual yfinance
 | **Rolling Sharpe / Calmar** | Any regime of degradation? |
 | **Regime Performance Decomposition** | How does each vol regime contribute to returns? |
 
-Supporting scripts:
-- [`annual_breakdown.py`](annual_breakdown.py) — year-by-year PnL and risk metrics.
-- [`analyze_corporate_actions.py`](analyze_corporate_actions.py) — flags months affected by splits/bonuses.
+Supporting script:
+- [`diagnostics.py`](diagnostics.py) — `--mode annual` (per-year PnL/DD/Sharpe) and `--mode lookback` (leave-one-out window ablation).
 
 ---
 
@@ -138,7 +137,7 @@ Supporting scripts:
 
 ```
 ├── config.py                    — Global parameters
-├── data_fetcher.py              — Price fetching, caching, forward returns
+├── data_fetcher.py              — Price fetching (close/daily/open matrices), caching, forward returns
 ├── features.py                  — Momentum + Z-score feature computation
 ├── engine.py                    — Core engine: walk-forward CatBoost, HMM directional /
 │                                  volscale / hmm_vol_size sizing, prob_invvol weighting,
@@ -149,13 +148,8 @@ Supporting scripts:
 ├── live_portfolio.py            — Month-start production signal generator
 ├── validate_strategy.py         — Full validation suite (Monte Carlo + sensitivity + charts)
 ├── compare_weights.py           — Head-to-head benchmark of all 5 weighting methods
-├── ablation_lookbacks.py        — Leave-one-out lookback window ablation
-├── annual_breakdown.py          — Per-year CAGR / DD / Sharpe decomposition
-├── analyze_corporate_actions.py — Corporate-action impact diagnostics
-│
-│   ─── Execution realism ───
-├── execution_realism.py         — Unified suite: cc / oc / oo / four variants + --log flag
-├── prepare_open_data.py         — Builds first/last-day open matrices
+├── diagnostics.py               — Post-hoc analysis: --mode annual | --mode lookback
+├── execution_realism.py         — Execution-slippage suite: cc / oc / oo / four variants + --log
 │
 └── data/
     ├── historical_composition.csv      — PiT Nifty 50 composition (Jan 2008 →)
@@ -181,8 +175,9 @@ python3 live_portfolio.py --index nifty100
 # Weighting method benchmark
 python3 compare_weights.py --index nifty100
 
-# Lookback ablation
-python3 ablation_lookbacks.py
+# Post-hoc diagnostics
+python3 diagnostics.py --mode annual
+python3 diagnostics.py --mode lookback
 
 # Execution realism — unified suite
 python3 execution_realism.py --variant cc   --log   # 29% close-to-close baseline

@@ -16,6 +16,8 @@ warnings.filterwarnings('ignore')
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), 'price_cache.csv')
 DAILY_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'daily_cache.csv')
+FIRST_OPEN_CACHE = os.path.join(os.path.dirname(__file__), 'monthly_first_open_adj.csv')
+LAST_OPEN_CACHE  = os.path.join(os.path.dirname(__file__), 'monthly_last_open_adj.csv')
 
 def load_historical_composition(csv_paths):
     if isinstance(csv_paths, str):
@@ -164,6 +166,37 @@ def fetch_daily_hlc(tickers, start, end, cache_path=os.path.join(os.path.dirname
     hlc.to_pickle(cache_path)
     print(f"Cached daily HLC data to {cache_path}")
     return hlc
+
+
+def fetch_monthly_open_prices(tickers, start, end,
+                              first_cache=FIRST_OPEN_CACHE, last_cache=LAST_OPEN_CACHE,
+                              force_refresh=False):
+    """First-trading-day and last-trading-day Open of each month, auto-adjusted.
+
+    Both matrices are month-end indexed (first_open is shifted from 'MS' to 'ME'
+    so it aligns with monthly_close). Used by execution_realism.py.
+    """
+    yf_tickers = [t if t.endswith('.NS') else f"{t}.NS" for t in tickers]
+
+    if os.path.exists(first_cache) and os.path.exists(last_cache) and not force_refresh:
+        print(f"Loading cached monthly opens from {first_cache}, {last_cache}")
+        fo = pd.read_csv(first_cache, index_col=0, parse_dates=True)
+        lo = pd.read_csv(last_cache,  index_col=0, parse_dates=True)
+        return fo, lo
+
+    print(f"Downloading daily opens for {len(yf_tickers)} tickers...")
+    raw = yf.download(yf_tickers, start=start, end=end, interval='1d',
+                      progress=False, auto_adjust=True, group_by='column')
+    opens = raw['Open']
+
+    first_open = opens.resample('MS').first()
+    last_open  = opens.resample('ME').last()
+    first_open.index = first_open.index + pd.offsets.MonthEnd(0)
+
+    first_open.to_csv(first_cache)
+    last_open.to_csv(last_cache)
+    print(f"Cached monthly opens -> {first_cache}, {last_cache}  (shape {first_open.shape})")
+    return first_open, last_open
 
 
 def compute_forward_returns(prices):

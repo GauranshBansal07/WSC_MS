@@ -21,7 +21,8 @@ warnings.filterwarnings('ignore')
 
 from config import (DATA_START, DATA_END, HISTORICAL_COMPOSITION_CSV,
                     NIFTY_NEXT_50_COMPOSITION_CSV, LOOKBACK_WINDOWS)
-from data_fetcher import fetch_monthly_prices, fetch_daily_prices, compute_forward_returns
+from data_fetcher import (fetch_monthly_prices, fetch_daily_prices,
+                          fetch_monthly_open_prices, compute_forward_returns)
 from features import compute_all_momentum
 import engine as eng
 from regime import get_regimes
@@ -31,9 +32,8 @@ from regime import get_regimes
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _load_open_matrices():
-    fo = pd.read_csv("monthly_first_open_adj.csv", index_col=0, parse_dates=True)
-    lo = pd.read_csv("monthly_last_open_adj.csv",  index_col=0, parse_dates=True)
+def _load_open_matrices(mask):
+    fo, lo = fetch_monthly_open_prices(mask.columns.tolist(), DATA_START, DATA_END)
     fo.columns = [c if c.endswith('.NS') else f"{c}.NS" for c in fo.columns]
     lo.columns = [c if c.endswith('.NS') else f"{c}.NS" for c in lo.columns]
     return fo, lo
@@ -135,6 +135,53 @@ def _write_log(rows, variant):
     print(f"  [log] {len(rows)} positions -> {out}")
 
 
+def _emit_log_rows_cc(res, regimes, monthly_close, daily_prices):
+    """Per-position log for cc variant — replicates what simulate_portfolio traded."""
+    rows = []
+    dates = sorted(res['date'].unique())
+    for i, date in enumerate(dates):
+        if i == len(dates) - 1:
+            continue
+        next_date = dates[i + 1]
+        group = res[res['date'] == date]
+        regime = regimes.get(date, 'Neutral')
+        size = eng.REGIME_SIZE.get(regime, 4)
+        stop = eng.REGIME_STOP.get(regime, -0.07)
+
+        buys = group[group['pred_prob'] >= eng.PROB_THRESHOLD].nlargest(size, 'pred_prob')
+        if buys.empty:
+            continue
+        rel_w = eng._compute_weights(buys, daily_prices, date, method='prob_invvol')
+        target_total = len(buys) / size
+        curr_w = {t: w * target_total for t, w in rel_w.items()}
+
+        for t, w in curr_w.items():
+            if t not in daily_prices.columns:
+                continue
+            win = daily_prices.loc[date:next_date, t].dropna()
+            if win.empty:
+                continue
+            entry = float(win.iloc[0]); exit_ = float(win.iloc[-1])
+            path = win / entry - 1.0
+            stopped = bool((path <= stop).any())
+            realized = stop if stopped else (exit_ / entry - 1.0)
+            rows.append({
+                'signal_date':  pd.Timestamp(date).strftime('%Y-%m-%d'),
+                'entry_date':   pd.Timestamp(date).strftime('%Y-%m-%d'),
+                'exit_date':    pd.Timestamp(next_date).strftime('%Y-%m-%d'),
+                'regime':       regime,
+                'ticker':       t,
+                'weight':       round(w, 4),
+                'entry_price':  round(entry, 2),
+                'exit_price':   round(exit_, 2),
+                'raw_return':   round(exit_ / entry - 1.0, 4),
+                'stopped_out':  stopped,
+                'realized_ret': round(realized, 4),
+                'pred_prob':    round(float(buys[buys['ticker'] == t]['pred_prob'].iloc[0]), 4),
+            })
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Variant runners
 # ---------------------------------------------------------------------------
@@ -145,21 +192,23 @@ def run_cc(log=False):
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
     res = _train_close_target(monthly_close, mask)
     dates = sorted(res['date'].unique())
-    regimes = get_regimes(dates, DATA_START, DATA_END, method='learned_hmm')
+    padding = (pd.to_datetime(dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+    regimes = get_regimes(dates, padding, DATA_END, method='learned_hmm')
 
-    rows = [] if log else None
-    port = simulate(res, regimes, monthly_close, monthly_close, daily_prices,
-                    entry_at_current=True, log_rows=rows)
+    # Canonical baseline — delegate to engine.simulate_portfolio for stats
+    port, _, _ = eng.simulate_portfolio(res, regimes, daily_prices,
+                                        sizing_scheme='directional', weighting='prob_invvol')
     _print_stats("CC — close-to-close month-end (baseline, unfillable)",
                  eng.performance_stats(port, periods_per_year=12))
-    if log: _write_log(rows, 'cc')
+    if log:
+        _write_log(_emit_log_rows_cc(res, regimes, monthly_close, daily_prices), 'cc')
 
 
 def run_oc(log=False):
     csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
     monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, _ = _load_open_matrices()
+    first_open, _ = _load_open_matrices(mask)
     res = _train_close_target(monthly_close, mask)
     dates = sorted(res['date'].unique())
     regimes = get_regimes(dates, DATA_START, DATA_END, method='learned_hmm')
@@ -176,7 +225,7 @@ def run_oo(log=False):
     csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
     monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, last_open = _load_open_matrices()
+    first_open, last_open = _load_open_matrices(mask)
 
     # Matched open-to-open training target
     mom = compute_all_momentum(last_open, LOOKBACK_WINDOWS)
@@ -199,7 +248,7 @@ def run_four():
     csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
     monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, _ = _load_open_matrices()
+    first_open, _ = _load_open_matrices(mask)
     last_close = monthly_close
     first_close = daily_prices.resample('MS').first()
     first_close.index = first_close.index + pd.offsets.MonthEnd(0)
