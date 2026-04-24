@@ -143,66 +143,6 @@ def run_pit_universe(universe_name, csv_paths, is_weekly=False,
                     freq_label=freq_label_short)
 
 
-def run_static_universe(universe_name, ticker_selection, is_weekly=False,
-                        regime_method='learned_hmm', sizing_scheme='directional'):
-    """Run static cached universe evaluation (Nifty 250 / Nifty 500)."""
-    banner = "=" * 80
-    freq_label = "WEEKLY" if is_weekly else "MONTHLY"
-    print(f"\n{banner}\nCATBOOST MOMENTUM — {universe_name} {freq_label}\n{banner}")
-
-    if not os.path.exists("daily_cache_nifty500.csv"):
-        print("Missing daily_cache_nifty500.csv — run prepare_nifty500.py first.")
-        return
-
-    daily_full = pd.read_csv("daily_cache_nifty500.csv", index_col=0, parse_dates=True)
-    if ticker_selection == 'nifty500':
-        daily_prices = daily_full
-    elif ticker_selection == 'nifty250':
-        top250_tickers = daily_full.notna().sum().nlargest(250).index.tolist()
-        daily_prices = daily_full[top250_tickers]
-    else:
-        return
-
-    prices = daily_prices.resample('W-FRI' if is_weekly else 'ME').last().dropna(how='all')
-    periods_per_year = 52 if is_weekly else 12
-    lookbacks = [1, 4, 12, 24, 52] if is_weekly else [1, 3, 6, 12]
-    min_train = 156 if is_weekly else 36
-
-    mask = prices.notna()
-    fwd_returns = compute_forward_returns(prices)
-    momentum_dict = compute_all_momentum(prices, lookbacks)
-    stacked = build_stacked_dataset(prices, mask, fwd_returns, momentum_dict, lookbacks)
-    res_df = run_expanding_window(stacked, min_train_months=min_train)
-    if res_df is None:
-        return
-
-    rebal_dates = sorted(res_df['date'].unique())
-    if not rebal_dates:
-        return
-    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
-    freq_label_short = "wk" if is_weekly else "mo"
-
-    if sizing_scheme == 'volscale':
-        print("  [VolScale] Calibrating target vol on unscaled top-10 book...")
-        target_vol, daily_rets = compute_target_vol(res_df, daily_prices)
-        print(f"  [VolScale] Target vol (median 126d rolling): {target_vol:.1%}")
-        if not (0.15 <= target_vol <= 0.25):
-            print(f"  ERROR: target_vol {target_vol:.1%} outside [15%, 25%]. Stopping.")
-            return
-        volscale_params = {'target_vol': target_vol, 'daily_rets': daily_rets}
-        _volscale_report(
-            f"{universe_name} {freq_label} — VOLSCALE (lev_cost=5%)",
-            volscale_params, res_df, daily_prices,
-            periods_per_year, freq_label_short, lev_cost=0.05, lev_cost_label="5% (primary)"
-        )
-    else:
-        regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=regime_method)
-        port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
-        stats = performance_stats(port, periods_per_year)
-        print_stats(stats, f"{universe_name} {freq_label} — LONG ONLY", counts,
-                    freq_label=freq_label_short)
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -211,7 +151,7 @@ def main():
     parser = argparse.ArgumentParser(description="CatBoost Momentum Strategy")
     parser.add_argument(
         '--index', type=str, default='all',
-        choices=['nifty50', 'nifty100', 'nifty250', 'nifty500', 'all'],
+        choices=['nifty50', 'nifty100', 'all'],
         help="Universe to backtest (default: all)"
     )
     parser.add_argument(
@@ -227,13 +167,11 @@ def main():
     )
     args = parser.parse_args()
 
-    run_50 = run_100 = run_250 = run_500 = False
+    run_50 = run_100 = False
     if args.index == 'all':
-        run_50 = run_100 = run_250 = run_500 = True
+        run_50 = run_100 = True
     elif args.index == 'nifty50':   run_50  = True
     elif args.index == 'nifty100':  run_100 = True
-    elif args.index == 'nifty250':  run_250 = True
-    elif args.index == 'nifty500':  run_500 = True
 
     if run_50:
         run_pit_universe("NIFTY 50", [HISTORICAL_COMPOSITION_CSV],
@@ -245,16 +183,6 @@ def main():
                          is_weekly=False, regime_method=args.regime, sizing_scheme=args.sizing)
         run_pit_universe("NIFTY 100", [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV],
                          is_weekly=True,  regime_method=args.regime, sizing_scheme=args.sizing)
-    if run_250:
-        run_static_universe("NIFTY 250 (Proxy)", 'nifty250',
-                            is_weekly=False, regime_method=args.regime, sizing_scheme=args.sizing)
-        run_static_universe("NIFTY 250 (Proxy)", 'nifty250',
-                            is_weekly=True,  regime_method=args.regime, sizing_scheme=args.sizing)
-    if run_500:
-        run_static_universe("NIFTY 500", 'nifty500',
-                            is_weekly=False, regime_method=args.regime, sizing_scheme=args.sizing)
-        run_static_universe("NIFTY 500", 'nifty500',
-                            is_weekly=True,  regime_method=args.regime, sizing_scheme=args.sizing)
 
 
 if __name__ == '__main__':
