@@ -52,7 +52,7 @@ def run_annual():
 
     print("Simulating portfolio...")
     port, _, _ = simulate_portfolio(res_df, regimes, daily_prices,
-                                    sizing_scheme='directional', weighting='prob_invvol')
+                                    weighting='prob_invvol')
 
     print("\n--- ANNUAL BREAKDOWN ---")
     rows = []
@@ -107,7 +107,7 @@ def run_lookback():
         padding = (pd.to_datetime(rebal[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
         regimes = get_regimes(rebal, padding, DATA_END, method='learned_hmm')
         port, _, _ = simulate_portfolio(res_df, regimes, daily_prices,
-                                        sizing_scheme='directional', weighting='prob_invvol')
+                                        weighting='prob_invvol')
         s = performance_stats(port, periods_per_year=12)
         print(f"  {str(windows):<25s} {s['ann']:>6.2f}% {s['sharpe']:>8.3f} "
               f"{s['dd']:>7.2f}% {s['calmar']:>8.3f}  {s['vol']:>6.2f}%")

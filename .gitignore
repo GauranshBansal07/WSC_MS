@@ -33,6 +33,9 @@ catboost_info/
 *.swp
 *.swo
 
+# Generated PDFs (regenerate from REPORT.md)
+*.pdf
+
 # Jupyter
 .ipynb_checkpoints/
 venv/

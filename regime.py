@@ -178,8 +178,6 @@ def get_regimes(rebal_dates, start_date, end_date, method='learned_hmm', **kwarg
         raise ValueError(f"Unknown regime method: '{method}'. Choose from: fixed_hmm, learned_hmm, none")
 
 
-# ---- Hybrid HMM: vol-sorted states + full posteriors ---------------------
-
 def _get_learned_hmm_vol_posteriors(rebal_dates, prices):
     """
     Walk-forward bivariate Gaussian HMM identical to _get_learned_hmm, EXCEPT:

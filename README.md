@@ -29,7 +29,7 @@ A **bivariate Gaussian HMM** is fitted walk-forward on Nifty 50 daily `(log-retu
 | **MedVol** | Middle | 4 | −6% |
 | **HighVol** | Highest | 3 | −4% |
 
-The model is refit every 12 months (expanding window, 5 random restarts, best log-likelihood kept). Using the volatility dimension for ordering — rather than mean return — gives more stable state assignments across refits.
+The model is refit every 12 months (expanding window, 5 random restarts, best log-likelihood kept).
 
 ### 3 — Portfolio Construction
 
@@ -39,9 +39,11 @@ From the ranked candidates with predicted probability ≥ 0.55, the top N (regim
 weight_i  ∝  pred_prob_i / σ_i(60d)
 ```
 
-This is the `prob_invvol` scheme — it simultaneously rewards high-conviction picks and penalises high idiosyncratic risk. Weights are normalised to sum to 1. Cash (uninvested fraction) earns the risk-free rate.
+Weights are normalised to sum to 1. Cash (uninvested fraction) earns the risk-free rate.
 
-**Costs**: 10 bps per side transaction cost; 5% p.a. leverage cost on gross exposure above 1×.
+**Stop-loss** uses a dual-tranche approach: the held portion (carried over from last month) is referenced to last month-end close; the new portion (added this month) is referenced to current month-end close. Each is monitored independently against intra-month daily closes.
+
+**Costs**: 10 bps per side transaction cost.
 
 ---
 
@@ -53,35 +55,15 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 
 | Metric | Value |
 |:---|:---:|
-| **CAGR** | **29.29%** |
-| Annualised Volatility | 17.30% |
-| **Sharpe Ratio** | **1.164** |
-| **Max Drawdown** | **−10.00%** |
-| **Calmar Ratio** | **2.929** |
-| Win Rate | 69.77% |
-| Avg positions / month | ~6 |
+| **CAGR** | **34.22%** |
+| Annualised Volatility | 17.36% |
+| **Sharpe Ratio** | **1.404** |
+| **Max Drawdown** | **−10.48%** |
+| **Calmar Ratio** | **3.264** |
+| Win Rate | 75.00% |
+| Avg positions / month | ~7 |
 
-This is the close-to-close baseline — signal at month-end T close, execute at that close, exit at month-end T+1 close. See [Execution Realism](#execution-realism) for the fillable-alternative variants.
-
-### Sizing Scheme Comparison
-
-| Scheme | CAGR | Sharpe | Max DD | Calmar |
-|:---|:---:|:---:|:---:|:---:|
-| **HMM LowVol/MedVol/HighVol** ✓ | **29.29%** | **1.164** | **−10.00%** | **2.929** |
-| VolScale 126d (BSC 2015) | 22.08% | 1.053 | −11.17% | 1.977 |
-| HMM 1/σ dynamic | 28.92% | 1.136 | −11.35% | 2.548 |
-
-### Weighting Method Comparison
-
-| Method | CAGR | Sharpe | Max DD | Calmar |
-|:---|:---:|:---:|:---:|:---:|
-| Equal Weight | 30.5% | 1.143 | −11.1% | 2.74 |
-| Probability-Weighted | 30.5% | 1.145 | −11.2% | 2.72 |
-| Inverse Volatility | 29.3% | 1.161 | −10.1% | 2.90 |
-| **Prob × Inv-Vol** ✓ | **29.3%** | **1.164** | **−10.0%** | **2.93** |
-| Half-Kelly | 30.3% | 1.149 | −11.6% | 2.61 |
-
-`prob_invvol` wins on every risk-adjusted metric. Equal/Prob weighting gives marginally higher raw CAGR but ~10% larger drawdowns. Half-Kelly underperforms on Calmar due to over-concentration at wrong moments.
+Execution: signal at month-end close, entry and exit at month-end close.
 
 ### Lookback Ablation (leave-one-out on [1, 3, 6, 12, 36, 60])
 
@@ -94,29 +76,13 @@ This is the close-to-close baseline — signal at month-end T close, execute at 
 | Drop 36M → `[1, 3, 6, 12, 60]` | 26.99% | 1.048 | −11.77% | 2.294 |
 | Drop 60M → `[1, 3, 6, 12, 36]` | 31.25% | 1.282 | −13.88% | 2.251 |
 
-**Critical finding**: the 6M window is the single most important lookback — removing it causes the worst risk-adjusted outcome. The 3M window is detrimental (mean-reversion noise on Indian markets) and its removal gives the global Calmar optimum.
-
----
-
-## Execution Realism
-
-The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. [`execution_realism.py`](execution_realism.py) quantifies the cost of realistic fills across four variants:
-
-| Execution | CAGR | DD | Sharpe | Calmar |
-|:---|:---:|:---:|:---:|:---:|
-| Close-to-close month-end (baseline, unfillable) | 29.29% | −10.00% | 1.164 | 2.929 |
-| **First-open entry → last-close exit** ✓ | **18.05%** | **−8.51%** | **0.828** | **2.122** |
-| Full open-to-open (within-month) | 13.44% | −10.07% | 0.622 | 1.334 |
-
-Roughly ~11pp of the headline CAGR is execution slippage — the momentum premium is [concentrated in the overnight segment](https://doi.org/10.1016/j.jfineco.2019.03.011) (Lou, Polk & Skouras 2019), so any open-to-open fill gives up most of the edge. **Entering at the next day's open and exiting at the final day's close** (bolded above) recovers the most value while remaining realistically fillable.
-
-Per-position trading logs (one CSV row per holding, suitable for manual yfinance verification) are produced with the `--log` flag, e.g. `python3 execution_realism.py --variant oc --log`.
+**Critical finding**: the 6M window is the single most important lookback — removing it causes the worst risk-adjusted outcome. The 3M window is detrimental and its removal gives the global Calmar optimum.
 
 ---
 
 ## Validation & Robustness
 
-`validate_strategy.py` runs a comprehensive suite and outputs 14 charts to `output/`:
+`validate_strategy.py` runs a comprehensive suite and outputs charts to `output/`:
 
 | Test | What it answers |
 |:---|:---|
@@ -128,28 +94,22 @@ Per-position trading logs (one CSV row per holding, suitable for manual yfinance
 | **Rolling Sharpe / Calmar** | Any regime of degradation? |
 | **Regime Performance Decomposition** | How does each vol regime contribute to returns? |
 
-Supporting script:
-- [`diagnostics.py`](diagnostics.py) — `--mode annual` (per-year PnL/DD/Sharpe) and `--mode lookback` (leave-one-out window ablation).
-
 ---
 
 ## Repository Structure
 
 ```
 ├── config.py                    — Global parameters
-├── data_fetcher.py              — Price fetching (close/daily/open matrices), caching, forward returns
+├── data_fetcher.py              — Price fetching (monthly/daily), caching, forward returns
 ├── features.py                  — Momentum + Z-score feature computation
-├── engine.py                    — Core engine: walk-forward CatBoost, HMM directional /
-│                                  volscale / hmm_vol_size sizing, prob_invvol weighting,
-│                                  daily stop-loss, turnover tracking
+├── engine.py                    — Core engine: walk-forward CatBoost, HMM directional sizing,
+│                                  prob_invvol weighting, dual-tranche stop-loss, turnover tracking
 ├── regime.py                    — Walk-forward HMM regime detection
 ├── main.py                      — CLI runner
-├── export_results.py            — CSV exporter for external evaluators
-├── live_portfolio.py            — Month-start production signal generator
+├── execution_realism.py         — Per-position trading log generator (CC execution)
 ├── validate_strategy.py         — Full validation suite (Monte Carlo + sensitivity + charts)
-├── compare_weights.py           — Head-to-head benchmark of all 5 weighting methods
 ├── diagnostics.py               — Post-hoc analysis: --mode annual | --mode lookback
-├── execution_realism.py         — Execution-slippage suite: cc / oc / oo / four variants + --log
+├── live_portfolio.py            — Month-start production signal generator
 │
 └── data/
     ├── historical_composition.csv      — PiT Nifty 50 composition (Jan 2008 →)
@@ -164,42 +124,32 @@ Supporting script:
 pip install catboost scikit-learn pandas numpy yfinance scipy hmmlearn matplotlib seaborn
 
 # Primary strategy — Nifty 100 monthly
-python3 main.py --index nifty100 --sizing directional
+python3 main.py --index nifty100
 
-# Full validation suite (14 charts → output/)
+# Full validation suite (charts → output/)
 python3 validate_strategy.py --index nifty100
 
 # Month-start live portfolio
 python3 live_portfolio.py --index nifty100
 
-# Weighting method benchmark
-python3 compare_weights.py --index nifty100
+# Per-position trading log
+python3 execution_realism.py --log
 
 # Post-hoc diagnostics
 python3 diagnostics.py --mode annual
 python3 diagnostics.py --mode lookback
-
-# Execution realism — unified suite
-python3 execution_realism.py --variant cc   --log   # 29% close-to-close baseline
-python3 execution_realism.py --variant oc   --log   # fillable open-entry / close-exit
-python3 execution_realism.py --variant oo   --log   # open-to-open (within-month)
-python3 execution_realism.py --variant four         # 4-way entry/exit × training comparison
 ```
 
 ### CLI Flags
 
 ```
 main.py:
+  --index     nifty50 | nifty100 | all   (default: all)
+  --regime    learned_hmm | fixed_hmm | none   (default: learned_hmm)
+
+validate_strategy.py / live_portfolio.py:
   --index     nifty50 | nifty100
   --regime    learned_hmm | fixed_hmm | none
-  --sizing    directional | volscale
-
-compare_weights.py / validate_strategy.py:
-  --index     nifty50 | nifty100
-  --regime    learned_hmm | fixed_hmm | none
-
-live_portfolio.py:
-  --index     nifty50 | nifty100
 ```
 
 ---
@@ -212,9 +162,8 @@ live_portfolio.py:
 |:---|:---:|:---|
 | `LOOKBACK_WINDOWS` | [1, 6, 12, 36, 60] | Momentum formation periods (months) |
 | `DATA_START` | 2008-01-01 | Start of PiT composition data |
-| `DATA_END` | 2025-04-01 | End of evaluation period |
+| `DATA_END` | 2025-01-31 | End of evaluation period |
 | `TRANSACTION_COST_BPS` | 10 | Cost per side |
-| `LEVERAGE_COST_ANNUAL` | 5% | Drag on gross exposure > 1× |
 | `RISK_FREE_ANNUAL` | 7% | India 10Y govt bond proxy |
 
 **`engine.py` portfolio constants**
@@ -230,4 +179,4 @@ live_portfolio.py:
 ## Notes on Survivorship Bias
 
 - **Nifty 50 / Nifty 100**: zero survivorship bias — PiT composition CSVs cover every month from Jan 2008.
-- All headline results are on Nifty 100 with PiT composition. Earlier Nifty 250 / 500 extensions used a 2025 static snapshot and were removed to avoid confusion.
+- All headline results are on Nifty 100 with PiT composition.

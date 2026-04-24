@@ -53,11 +53,14 @@ def load_historical_composition(csv_paths):
 
 def fetch_monthly_prices(csv_paths, start, end, cache_path=CACHE_PATH, force_refresh=False):
     """
-    Download daily prices, resample to month-end closes.
+    Download month-end adjusted closes directly from yfinance using interval='1mo'.
 
-    Why month-end: the paper forms portfolios monthly and holds for one month.
-    Using month-end closes aligns entry/exit timing and avoids intra-month
-    lookahead when computing momentum and forward returns.
+    Using the native monthly interval avoids cases where daily resampling slips
+    into the next month's first day (timezone / data-sourcing edge cases), which
+    would cause the stop-loss engine to carry the brunt of the overnight move
+    into the new month.
+
+    NOTE: delete price_cache.csv to force a re-download after changing this.
     """
     mask, tickers = load_historical_composition(csv_paths)
 
@@ -66,15 +69,16 @@ def fetch_monthly_prices(csv_paths, start, end, cache_path=CACHE_PATH, force_ref
         prices = pd.read_csv(cache_path, index_col=0, parse_dates=True)
         return prices, mask
 
-    print(f"Downloading daily prices for {len(tickers)} tickers...")
+    print(f"Downloading monthly prices for {len(tickers)} tickers...")
     print(f"Date range: {start} to {end}")
 
-    # yfinance bulk download — faster than per-ticker
+    # yfinance monthly bars — server-side aggregation avoids client-side
+    # resampling slippage into next month.
     raw = yf.download(
         tickers,
         start=start,
         end=end,
-        interval='1d',
+        interval='1mo',
         auto_adjust=True,
         progress=True,
         threads=True
@@ -84,20 +88,19 @@ def fetch_monthly_prices(csv_paths, start, end, cache_path=CACHE_PATH, force_ref
     if isinstance(raw.columns, pd.MultiIndex):
         closes = raw['Close']
     else:
-        # Single ticker edge case
         closes = raw[['Close']]
         closes.columns = [tickers[0]]
 
-    # Resample to month-end: take the last available trading day each month
-    monthly = closes.resample('ME').last()
+    # yfinance monthly bars use month-START as the date index; shift to month-END
+    # so the index aligns with our composition mask and forward-return logic.
+    monthly = closes.copy()
+    monthly.index = monthly.index + pd.offsets.MonthEnd(0)
 
-    # Drop tickers with too little data (less than 60 months — need this for
-    # the longest lookback window)
+    # Drop tickers with too little data (less than 60 months)
     min_obs = 60
     valid_cols = monthly.columns[monthly.notna().sum() >= min_obs]
     monthly = monthly[valid_cols]
 
-    # Report coverage
     total_months = len(monthly)
     print(f"\nMonthly price matrix: {total_months} months × {len(monthly.columns)} tickers")
     print(f"Date range: {monthly.index[0].strftime('%Y-%m')} to {monthly.index[-1].strftime('%Y-%m')}")
@@ -105,7 +108,6 @@ def fetch_monthly_prices(csv_paths, start, end, cache_path=CACHE_PATH, force_ref
     missing_pct = monthly.isna().sum().sum() / monthly.size * 100
     print(f"Missing data: {missing_pct:.1f}%")
 
-    # Cache
     monthly.to_csv(cache_path)
     print(f"Cached to {cache_path}")
 

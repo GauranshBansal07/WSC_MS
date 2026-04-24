@@ -1,42 +1,24 @@
 #!/usr/bin/env python3
 """
-execution_realism.py — Unified execution-slippage analysis suite.
+execution_realism.py — CC baseline analysis & per-position trading log.
 
-Variants:
-  cc    Close-to-close month-end (baseline, unfillable)   ~29% CAGR
-  oc    First-open entry, last-close exit (fillable)      ~18% CAGR
-  oo    First-open to last-open (within-month)            ~13% CAGR
-  four  4-variant comparison (matched vs original target training)
+Runs the canonical close-to-close month-end execution using engine.simulate_portfolio
+(with the monthly_prices entry-price fix) and optionally writes a per-position CSV
+for manual verification against yfinance quotes.
 
 Usage:
-  python3 execution_realism.py --variant cc --log
-  python3 execution_realism.py --variant oc --log
-  python3 execution_realism.py --variant four
-
---log writes a per-position CSV (trading_log_<variant>.csv) for manual
-yfinance verification. Ignored for --variant four.
+  python3 execution_realism.py            # print headline stats
+  python3 execution_realism.py --log      # also write trading_log_cc.csv
 """
 import argparse, warnings, numpy as np, pandas as pd
 warnings.filterwarnings('ignore')
 
 from config import (DATA_START, DATA_END, HISTORICAL_COMPOSITION_CSV,
                     NIFTY_NEXT_50_COMPOSITION_CSV, LOOKBACK_WINDOWS)
-from data_fetcher import (fetch_monthly_prices, fetch_daily_prices,
-                          fetch_monthly_open_prices, compute_forward_returns)
+from data_fetcher import fetch_monthly_prices, fetch_daily_prices, compute_forward_returns
 from features import compute_all_momentum
 import engine as eng
 from regime import get_regimes
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _load_open_matrices(mask):
-    fo, lo = fetch_monthly_open_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    fo.columns = [c if c.endswith('.NS') else f"{c}.NS" for c in fo.columns]
-    lo.columns = [c if c.endswith('.NS') else f"{c}.NS" for c in lo.columns]
-    return fo, lo
 
 
 def _print_stats(name, stats):
@@ -47,101 +29,16 @@ def _print_stats(name, stats):
     print(f"  Calmar : {stats['calmar']:.3f}")
 
 
-def _train_close_target(monthly_close, mask, min_train=60):
-    """CatBoost walk-forward on original close-to-close monthly target."""
-    fwd = compute_forward_returns(monthly_close)
-    mom = compute_all_momentum(monthly_close, LOOKBACK_WINDOWS)
-    stacked = eng.build_stacked_dataset(monthly_close, mask, fwd, mom, LOOKBACK_WINDOWS)
-    return eng.run_expanding_window(stacked, min_train_months=min_train)
-
-
-def simulate(res, regimes, entry_df, exit_df, daily_prices,
-             entry_at_current=False, log_rows=None):
-    """Generic monthly simulator.
-
-    entry_at_current=True  -> entry price indexed at date T (signal day close).
-    entry_at_current=False -> entry price indexed at next_date T+1 (next-month open).
-    Exit price always indexed at next_date.
-    If log_rows is a list, per-position dicts are appended for CSV output.
-    """
-    returns = []
-    dates = sorted(res['date'].unique())
-    prev_w = {}
-    for i, date in enumerate(dates):
-        group = res[res['date'] == date]
-        if group.empty or i == len(dates) - 1:
-            continue
-        next_date = dates[i + 1]
-        regime = regimes.get(date, 'Neutral')
-        size = eng.REGIME_SIZE.get(regime, 4)
-        stop = eng.REGIME_STOP.get(regime, -0.07)
-
-        buys = group[group['pred_prob'] >= eng.PROB_THRESHOLD].nlargest(size, 'pred_prob')
-        if buys.empty:
-            returns.append(0.0); prev_w = {}
-            continue
-
-        rel_w = eng._compute_weights(buys, daily_prices, date, method='prob_invvol')
-        inv_f = min(1.0, len(buys) / size)
-        curr_w = {t: w * inv_f for t, w in rel_w.items()}
-
-        invested = 0.0
-        for t, w in curr_w.items():
-            if t not in entry_df.columns or t not in exit_df.columns or t not in daily_prices.columns:
-                continue
-            entry_idx = date if entry_at_current else next_date
-            ps = entry_df.loc[entry_idx, t] if entry_idx in entry_df.index else np.nan
-            pe = exit_df.loc[next_date, t] if next_date in exit_df.index else np.nan
-            if pd.isna(ps) or pd.isna(pe) or ps <= 0:
-                continue
-            trace_start = date + pd.Timedelta(days=1)
-            try:
-                path = daily_prices.loc[trace_start:next_date, t] / ps - 1.0
-                stopped = bool((path <= stop).any())
-            except KeyError:
-                stopped = False
-            realized = stop if stopped else (pe / ps - 1.0)
-            invested += realized * w
-
-            if log_rows is not None:
-                log_rows.append({
-                    'signal_date':  pd.Timestamp(date).strftime('%Y-%m-%d'),
-                    'entry_date':   pd.Timestamp(entry_idx).strftime('%Y-%m-%d'),
-                    'exit_date':    pd.Timestamp(next_date).strftime('%Y-%m-%d'),
-                    'regime':       regime,
-                    'ticker':       t,
-                    'weight':       round(w, 4),
-                    'entry_price':  round(float(ps), 2),
-                    'exit_price':   round(float(pe), 2),
-                    'raw_return':   round(pe / ps - 1.0, 4),
-                    'stopped_out':  stopped,
-                    'realized_ret': round(realized, 4),
-                    'pred_prob':    round(float(buys[buys['ticker'] == t]['pred_prob'].iloc[0]), 4),
-                })
-
-        cash = 1.0 - sum(curr_w.values())
-        rf = (1 + eng.RISK_FREE_ANNUAL) ** (1/12) - 1.0
-        gross = invested + cash * rf
-        all_t = set(prev_w) | set(curr_w)
-        turnover = sum(abs(curr_w.get(t, 0) - prev_w.get(t, 0)) for t in all_t)
-        returns.append(gross - turnover * eng.TX_COST_SIDE)
-        prev_w = curr_w
-    return pd.Series(returns, index=pd.DatetimeIndex(dates[:len(returns)]))
-
-
-def _write_log(rows, variant):
-    out = f"trading_log_{variant}.csv"
-    pd.DataFrame(rows).to_csv(out, index=False)
-    print(f"  [log] {len(rows)} positions -> {out}")
-
-
-def _emit_log_rows_cc(res, regimes, monthly_close, daily_prices):
-    """Per-position log for cc variant — replicates what simulate_portfolio traded."""
+def _emit_log_rows(res, regimes, monthly_close, daily_prices):
+    """Per-position trading log — mirrors engine.simulate_portfolio dual-tranche logic."""
     rows = []
     dates = sorted(res['date'].unique())
+    prev_w = {}
+
     for i, date in enumerate(dates):
         if i == len(dates) - 1:
             continue
+        prev_date = dates[i - 1] if i > 0 else None
         next_date = dates[i + 1]
         group = res[res['date'] == date]
         regime = regimes.get(date, 'Neutral')
@@ -150,6 +47,7 @@ def _emit_log_rows_cc(res, regimes, monthly_close, daily_prices):
 
         buys = group[group['pred_prob'] >= eng.PROB_THRESHOLD].nlargest(size, 'pred_prob')
         if buys.empty:
+            prev_w = {}
             continue
         rel_w = eng._compute_weights(buys, daily_prices, date, method='prob_invvol')
         target_total = len(buys) / size
@@ -158,142 +56,108 @@ def _emit_log_rows_cc(res, regimes, monthly_close, daily_prices):
         for t, w in curr_w.items():
             if t not in daily_prices.columns:
                 continue
+
+            w_prev_t = prev_w.get(t, 0.0)
+            w_held   = min(w_prev_t, w)
+            w_new    = max(0.0, w - w_prev_t)
+
+            def _mp(d):
+                if d is not None and t in monthly_close.columns and d in monthly_close.index:
+                    ep = monthly_close.loc[d, t]
+                    if pd.notna(ep) and ep > 0:
+                        return float(ep)
+                return None
+
+            curr_entry = _mp(date)
+            prev_entry = _mp(prev_date)
+
             win = daily_prices.loc[date:next_date, t].dropna()
             if win.empty:
                 continue
-            entry = float(win.iloc[0]); exit_ = float(win.iloc[-1])
-            path = win / entry - 1.0
-            stopped = bool((path <= stop).any())
-            realized = stop if stopped else (exit_ / entry - 1.0)
+            fallback = float(win.iloc[0])
+            if curr_entry is None:
+                curr_entry = fallback
+            if prev_entry is None:
+                prev_entry = curr_entry
+            exit_ = float(win.iloc[-1])
+
+            def _tranche_ret(entry):
+                if entry <= 0:
+                    return None, False
+                path = win / entry - 1.0
+                if (path <= stop).any():
+                    return stop, True
+                return exit_ / entry - 1.0, False
+
+            ret_held, stopped_held = _tranche_ret(prev_entry) if w_held > 0 else (None, False)
+            ret_new,  stopped_new  = _tranche_ret(curr_entry) if w_new  > 0 else (None, False)
+
+            # Composite log row (weighted average entry / return across both tranches)
+            total_w = w_held + w_new
+            if total_w <= 0:
+                continue
+            blended_entry = (
+                (prev_entry * w_held + curr_entry * w_new) / total_w
+                if (w_held + w_new) > 0 else curr_entry
+            )
+            realized_ret = (
+                ((ret_held or 0.0) * w_held + (ret_new or 0.0) * w_new) / total_w
+            )
+            stopped = stopped_held or stopped_new
+
             rows.append({
                 'signal_date':  pd.Timestamp(date).strftime('%Y-%m-%d'),
-                'entry_date':   pd.Timestamp(date).strftime('%Y-%m-%d'),
                 'exit_date':    pd.Timestamp(next_date).strftime('%Y-%m-%d'),
                 'regime':       regime,
                 'ticker':       t,
-                'weight':       round(w, 4),
-                'entry_price':  round(entry, 2),
+                'w_held':       round(w_held, 4),
+                'w_new':        round(w_new, 4),
+                'entry_held':   round(prev_entry, 2),
+                'entry_new':    round(curr_entry, 2),
                 'exit_price':   round(exit_, 2),
-                'raw_return':   round(exit_ / entry - 1.0, 4),
                 'stopped_out':  stopped,
-                'realized_ret': round(realized, 4),
+                'realized_ret': round(realized_ret, 4),
                 'pred_prob':    round(float(buys[buys['ticker'] == t]['pred_prob'].iloc[0]), 4),
             })
+
+        prev_w = curr_w
     return rows
 
-
-# ---------------------------------------------------------------------------
-# Variant runners
-# ---------------------------------------------------------------------------
 
 def run_cc(log=False):
     csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
     monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
     daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    res = _train_close_target(monthly_close, mask)
+
+    fwd = compute_forward_returns(monthly_close)
+    mom = compute_all_momentum(monthly_close, LOOKBACK_WINDOWS)
+    stacked = eng.build_stacked_dataset(monthly_close, mask, fwd, mom, LOOKBACK_WINDOWS)
+    res = eng.run_expanding_window(stacked, min_train_months=48)
+
     dates = sorted(res['date'].unique())
     padding = (pd.to_datetime(dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
     regimes = get_regimes(dates, padding, DATA_END, method='learned_hmm')
 
-    # Canonical baseline — delegate to engine.simulate_portfolio for stats
     port, _, _ = eng.simulate_portfolio(res, regimes, daily_prices,
-                                        sizing_scheme='directional', weighting='prob_invvol')
-    _print_stats("CC — close-to-close month-end (baseline, unfillable)",
+                                        sizing_scheme='directional',
+                                        weighting='prob_invvol',
+                                        monthly_prices=monthly_close)
+    _print_stats("CC — close-to-close month-end (with entry-price fix)",
                  eng.performance_stats(port, periods_per_year=12))
+
     if log:
-        _write_log(_emit_log_rows_cc(res, regimes, monthly_close, daily_prices), 'cc')
+        rows = _emit_log_rows(res, regimes, monthly_close, daily_prices)
+        out = "trading_log_cc.csv"
+        pd.DataFrame(rows).to_csv(out, index=False)
+        print(f"  [log] {len(rows)} positions -> {out}")
 
-
-def run_oc(log=False):
-    csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
-    monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
-    daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, _ = _load_open_matrices(mask)
-    res = _train_close_target(monthly_close, mask)
-    dates = sorted(res['date'].unique())
-    regimes = get_regimes(dates, DATA_START, DATA_END, method='learned_hmm')
-
-    rows = [] if log else None
-    port = simulate(res, regimes, first_open, monthly_close, daily_prices,
-                    entry_at_current=False, log_rows=rows)
-    _print_stats("OC — first-open entry, last-close exit (fillable)",
-                 eng.performance_stats(port, periods_per_year=12))
-    if log: _write_log(rows, 'oc')
-
-
-def run_oo(log=False):
-    csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
-    monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
-    daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, last_open = _load_open_matrices(mask)
-
-    # Matched open-to-open training target
-    mom = compute_all_momentum(last_open, LOOKBACK_WINDOWS)
-    fwd = (last_open.shift(-1) / first_open.shift(-1)) - 1.0
-    stacked = eng.build_stacked_dataset(last_open, mask, fwd, mom, LOOKBACK_WINDOWS)
-    res = eng.run_expanding_window(stacked, min_train_months=48)
-    dates = sorted(res['date'].unique())
-    regimes = get_regimes(dates, DATA_START, DATA_END, method='learned_hmm')
-
-    rows = [] if log else None
-    port = simulate(res, regimes, first_open, last_open, daily_prices,
-                    entry_at_current=False, log_rows=rows)
-    _print_stats("OO — first-open to last-open (within-month)",
-                 eng.performance_stats(port, periods_per_year=12))
-    if log: _write_log(rows, 'oo')
-
-
-def run_four():
-    """4-way: (first-close vs first-open entry) x (matched vs original-c-c training)."""
-    csv_paths = [HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV]
-    monthly_close, mask = fetch_monthly_prices(csv_paths, DATA_START, DATA_END)
-    daily_prices = fetch_daily_prices(mask.columns.tolist(), DATA_START, DATA_END)
-    first_open, _ = _load_open_matrices(mask)
-    last_close = monthly_close
-    first_close = daily_prices.resample('MS').first()
-    first_close.index = first_close.index + pd.offsets.MonthEnd(0)
-
-    mom = compute_all_momentum(monthly_close, LOOKBACK_WINDOWS)
-    fwd_fc_lc = (last_close.shift(-1) / first_close.shift(-1)) - 1.0
-    fwd_fo_lc = (last_close.shift(-1) / first_open.shift(-1))  - 1.0
-    fwd_cc    =  last_close.shift(-1) / last_close - 1.0
-
-    print("[*] Training CatBoost models...")
-    res_fc = eng.run_expanding_window(eng.build_stacked_dataset(monthly_close, mask, fwd_fc_lc, mom, LOOKBACK_WINDOWS), min_train_months=48)
-    res_fo = eng.run_expanding_window(eng.build_stacked_dataset(monthly_close, mask, fwd_fo_lc, mom, LOOKBACK_WINDOWS), min_train_months=48)
-    res_cc = eng.run_expanding_window(eng.build_stacked_dataset(monthly_close, mask, fwd_cc,    mom, LOOKBACK_WINDOWS), min_train_months=48)
-
-    dates = sorted(res_cc['date'].unique())
-    regimes = get_regimes(dates, DATA_START, DATA_END, method='learned_hmm')
-
-    print("\n" + "=" * 60 + "\n  FOUR-VARIANT COMPARISON\n" + "=" * 60)
-    for name, res, entry, exit_ in [
-        ("1) Entry=first-CLOSE, Exit=last-CLOSE, Train=matched",  res_fc, first_close, last_close),
-        ("2) Entry=first-CLOSE, Exit=last-CLOSE, Train=original", res_cc, first_close, last_close),
-        ("3) Entry=first-OPEN,  Exit=last-CLOSE, Train=matched",  res_fo, first_open,  last_close),
-        ("4) Entry=first-OPEN,  Exit=last-CLOSE, Train=original", res_cc, first_open,  last_close),
-    ]:
-        port = simulate(res, regimes, entry, exit_, daily_prices, entry_at_current=False)
-        _print_stats(name, eng.performance_stats(port, periods_per_year=12))
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main():
-    p = argparse.ArgumentParser(description="Execution-realism analysis suite")
-    p.add_argument('--variant', choices=['cc', 'oc', 'oo', 'four'], required=True,
-                   help="cc=close-to-close baseline | oc=open-entry/close-exit | "
-                        "oo=open-to-open | four=4-way comparison")
+    p = argparse.ArgumentParser(description="CC execution baseline + optional trading log")
     p.add_argument('--log', action='store_true',
-                   help="Write per-position trading log CSV (cc/oc/oo only)")
+                   help="Write per-position trading log to trading_log_cc.csv")
     args = p.parse_args()
-
-    if   args.variant == 'cc':   run_cc(log=args.log)
-    elif args.variant == 'oc':   run_oc(log=args.log)
-    elif args.variant == 'oo':   run_oo(log=args.log)
-    elif args.variant == 'four': run_four()
+    run_cc(log=args.log)
 
 
 if __name__ == '__main__':

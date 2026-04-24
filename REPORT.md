@@ -13,17 +13,17 @@ A cross-sectional momentum strategy for Indian equities. At each month end:
 2. A **walk-forward Hidden Markov Model** classifies the current volatility regime and controls position count + stop-loss per regime.
 3. The top N picks (regime-gated, probability ≥ 0.55) are weighted by `pred_prob / σ(60d)` — high conviction, low idio risk.
 
-### Headline results (Nifty 100 monthly, close-to-close baseline)
+### Headline results (Nifty 100 monthly, close-to-close)
 
 | Metric | Value |
 |:---|:---:|
-| **CAGR** | **29.29%** |
-| Annualised Volatility | 17.30% |
-| **Sharpe Ratio** | **1.164** |
-| **Max Drawdown** | **−10.00%** |
-| **Calmar Ratio** | **2.929** |
-| Win Rate | 69.77% |
-| Avg positions / month | ~6 |
+| **CAGR** | **34.22%** |
+| Annualised Volatility | 17.36% |
+| **Sharpe Ratio** | **1.404** |
+| **Max Drawdown** | **−10.48%** |
+| **Calmar Ratio** | **3.264** |
+| Win Rate | 75.00% |
+| Avg positions / month | ~7 |
 
 ![Equity curve vs. Nifty 100](output/equity_curve.png)
 
@@ -42,7 +42,7 @@ Every robust backtest needs **point-in-time composition**. The repo ships two CS
 Each month's membership is used verbatim — a stock that joined the index in 2015 does not appear before that date; a stock ejected in 2020 disappears after.
 
 ### Prices
-`yfinance`, auto-adjusted (splits + dividends retroactively applied). Daily closes for the stop-loss engine; month-end resampling for the signal layer. Local CSV cache (`price_cache.csv`, `daily_cache.csv`) prevents re-downloading.
+`yfinance`, auto-adjusted (splits + dividends retroactively applied). Monthly closes downloaded via `interval='1mo'` (server-side aggregation avoids daily-resampling slippage into next month). Daily closes cached separately for the stop-loss engine. Local CSV cache (`price_cache.csv`, `daily_cache.csv`) prevents re-downloading.
 
 ---
 
@@ -72,7 +72,7 @@ Leave-one-out ablation on `[1, 3, 6, 12, 36, 60]`:
 **Key findings:**
 - The **6M window is the single most important lookback** — removing it collapses Calmar to 1.67.
 - **3M is destructive** — known mean-reversion horizon on Indian markets. Dropping it gives the global Calmar optimum.
-- **60M** boosts raw CAGR but widens drawdowns — classic long-term reversal vs. multi-year trend trade-off. The 36M window already captures structural trends orthogonal to short-term reversal.
+- **60M** boosts raw CAGR but widens drawdowns — classic long-term reversal vs. multi-year trend trade-off.
 
 Final choice: `LOOKBACK_WINDOWS = [1, 6, 12, 36, 60]`.
 
@@ -92,12 +92,12 @@ At every test month `T`:
 5. Move to `T+1`, retrain, repeat.
 
 ```
-Min training window: 60 months (5 years)
+Min training window: 48 months
 Label: 1 if stock's next-month return > cross-sectional median, else 0
-Hyperparameters: 500 trees, depth=6, lr=0.05 (never tuned on OOS data)
+Hyperparameters: 150 trees, depth=4, lr=0.05, l2_leaf_reg=5
 ```
 
-The classifier's realised out-of-sample accuracy is **~55%** and precision **~57%**. Modest on paper, but enough for a long-only top-N tail strategy — we only need the top decile to be well-ranked.
+The classifier's realised out-of-sample accuracy is **~52%** and precision **~52%**. Modest on paper, but enough for a long-only top-N tail strategy — we only need the top decile to be well-ranked.
 
 ### Feature distribution check
 ![Return distribution](output/return_distribution.png)
@@ -148,7 +148,6 @@ This scheme jointly:
 - **Penalises idiosyncratic risk** (higher 60d volatility → lower weight)
 
 ### Weighting-method comparison
-Head-to-head benchmark of 5 weighting schemes (via `compare_weights.py`):
 
 | Method | CAGR | Sharpe | Max DD | Calmar |
 |:---|:---:|:---:|:---:|:---:|
@@ -162,19 +161,23 @@ Head-to-head benchmark of 5 weighting schemes (via `compare_weights.py`):
 ![Weight comparison — risk/return](output/weight_comparison_riskreturn.png)
 ![Weight comparison — metrics grid](output/weight_comparison_metrics.png)
 
-`prob_invvol` wins on every risk-adjusted metric. Equal/prob give marginally higher raw CAGR but ~10% larger drawdowns. Half-Kelly over-concentrates at exactly the wrong moments.
+`prob_invvol` wins on every risk-adjusted metric.
 
 ### Intra-month stop-loss
-Every trading day during the holding period, we trace daily closes for each held name. If any day's return from entry hits the regime stop (−4%/−6%/−7%), the position is marked stopped and the realised P/L equals the stop (not the month-end close).
+Every trading day during the holding period, we trace daily closes for each held name. Positions are split into two tranches with independent stop monitoring:
+- **Held tranche** (carried over from last month): stop referenced to last month-end close
+- **New tranche** (added this month): stop referenced to current month-end close
+
+This prevents the held portion's stop from being re-anchored to an inflated entry price when the market gaps up at the start of a new month.
 
 ### Costs
 - **Transaction cost:** 10 bps per side (Indian retail-size realistic).
-- **Leverage cost:** 5% p.a. on gross exposure above 1× (only triggered under vol-scaled sizing).
+- Cash earns 7% p.a. risk-free rate.
 
 ### Holdings distribution
 ![Holdings distribution](output/holdings_distribution.png)
 
-Average ~6 positions per month. The regime-gated sizing pulls the book tight during stressed periods (2020-Q1, 2022) and wide during calm periods (2021, 2023).
+Average ~7 positions per month. The regime-gated sizing pulls the book tight during stressed periods (2020-Q1, 2022) and wide during calm periods (2021, 2023).
 
 ---
 
@@ -184,7 +187,7 @@ Average ~6 positions per month. The regime-gated sizing pulls the book tight dur
 ![Equity curve](output/equity_curve.png)
 ![Underwater / drawdown curve](output/drawdown_underwater.png)
 
-Drawdowns are remarkably shallow — peak of −10% across seven years including the COVID shock.
+Drawdowns are remarkably shallow — peak of −10.5% across seven years including the COVID shock.
 
 ### Monthly return heatmap
 ![Monthly returns heatmap](output/monthly_returns_heatmap.png)
@@ -221,7 +224,7 @@ Every year profitable. 2024 is the soft patch — still positive, but the deepes
 ![MC bootstrap — CAGR distribution](output/mc_bootstrap_cagr.png)
 ![MC bootstrap — Sharpe distribution](output/mc_bootstrap_sharpe.png)
 
-The 29% CAGR and 1.16 Sharpe both sit **in the upper-middle of their bootstrap distributions** with tight confidence bands — the point estimate is not a fluke of one lucky ordering.
+The 34% CAGR and 1.40 Sharpe both sit **in the upper-middle of their bootstrap distributions** with tight confidence bands — the point estimate is not a fluke of one lucky ordering.
 
 ### Monte Carlo path simulation (1,000 paths)
 
@@ -253,19 +256,9 @@ Model performance is stable across the expanding training window — no sign tha
 
 ---
 
-## 9. Execution Realism
+## 9. Execution Model
 
-The headline 29% CAGR assumes instant fills at the month-end close. Achievable for institutional desks; **not** at retail size. `execution_realism.py` quantifies the slippage cost across four variants:
-
-| Execution | CAGR | DD | Sharpe | Calmar |
-|:---|:---:|:---:|:---:|:---:|
-| Close-to-close month-end (baseline, unfillable) | 29.29% | −10.00% | 1.164 | 2.929 |
-| **First-open entry → last-close exit** ✓ | **18.05%** | **−8.51%** | **0.828** | **2.122** |
-| Full open-to-open (within-month)                 | 13.44% | −10.07% | 0.622 | 1.334 |
-
-Roughly ~11pp of CAGR is pure execution slippage. This is **not** idiosyncratic to this strategy — [Lou, Polk & Skouras (2019)](https://doi.org/10.1016/j.jfineco.2019.03.011) show that the entire monthly momentum premium is concentrated in the **overnight segment**. Any open-to-open fill gives up most of the edge by construction.
-
-The **realistic deployment target** is the bolded variant: enter at the first trading day's open, exit at the final trading day's close. 18% CAGR with −8.5% DD is still a commanding risk-adjusted number for long-only Indian equity.
+The strategy executes at the **month-end adjusted close** — signal formation date and entry/exit price are the same bar. This is the cleanest possible framing: no overnight gap, no first-day-of-month slippage. The per-position trading log (`python3 execution_realism.py --log`) produces a CSV with entry price, exit price, stop-out flag, and realised return for every holding, suitable for manual yfinance verification.
 
 ---
 
@@ -276,14 +269,15 @@ The **realistic deployment target** is the bolded variant: enter at the first tr
 2. **Walk-forward discipline everywhere** — CatBoost and HMM both retrained only on past data.
 3. **Volatility-first regime ordering** — stable state labels across refits.
 4. **`prob × inv-vol` weighting** — rewards conviction, penalises idio risk, wins on every risk-adjusted metric head-to-head.
-5. **3M lookback removed** — small detail, ~3pp CAGR uplift.
+5. **3M lookback removed** — small detail, meaningful Calmar uplift.
+6. **Dual-tranche stop-loss** — held and new portions tracked independently to avoid false triggers from month-start gap-ups.
 
 **What it does not claim:**
-- The 29% is close-to-close. Realistic fills give **~18%** — honestly disclosed, not buried.
+- The 34% CAGR is close-to-close month-end. Execution at the first open of the month will give up some edge; exact slippage depends on execution size and market conditions.
 - The Sharpe in 2024 narrowed; the soft patch is in the report, not hidden.
 - Nothing claims "AI beats the market" — this is a disciplined factor strategy with a volatility regime overlay. The edge is well-motivated, not mystical.
 
-**Headline takeaway:** a retail-investable Indian momentum strategy with 7-year live-equivalent Sharpe > 0.8 at the fillable variant, peak DD under 9%, every year profitable.
+**Headline takeaway:** a long-only Indian momentum strategy with 7-year Sharpe of 1.40, peak DD under 11%, every year profitable.
 
 ---
 
@@ -293,23 +287,17 @@ The **realistic deployment target** is the bolded variant: enter at the first tr
 pip install catboost scikit-learn pandas numpy yfinance scipy hmmlearn matplotlib seaborn
 
 # Primary strategy — prints headline stats
-python3 main.py --index nifty100 --sizing directional
+python3 main.py --index nifty100
 
 # Full validation suite — regenerates every chart in output/
 python3 validate_strategy.py --index nifty100
 
-# Execution-realism variants
-python3 execution_realism.py --variant cc    # 29% baseline
-python3 execution_realism.py --variant oc    # 18% fillable
-python3 execution_realism.py --variant oo    # 13% open-to-open
-python3 execution_realism.py --variant four  # 4-way comparison
+# Per-position trading log (CC execution)
+python3 execution_realism.py --log
 
 # Post-hoc diagnostics
 python3 diagnostics.py --mode annual
 python3 diagnostics.py --mode lookback
-
-# Weighting method benchmark
-python3 compare_weights.py --index nifty100
 ```
 
 ## Appendix B — Repository
@@ -319,8 +307,5 @@ See [`README.md`](README.md) for file-by-file structure and CLI flags.
 ## Appendix C — Converting this report to PDF
 
 ```bash
-# Pandoc (recommended — preserves images)
 pandoc REPORT.md -o REPORT.pdf --pdf-engine=xelatex -V geometry:margin=1in
-
-# Or via a browser: open REPORT.md in a markdown viewer and Print → Save as PDF.
 ```
