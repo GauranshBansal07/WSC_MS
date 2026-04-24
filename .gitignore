@@ -33,7 +33,10 @@ catboost_info/
 *.swp
 *.swo
 
-# Generated PDFs (regenerate from REPORT.md)
+# Reports (generated locally, not committed)
+REPORT.md
+REPORT.html
+REPORT.pdf
 *.pdf
 
 # Jupyter
