@@ -37,6 +37,7 @@ catboost_info/
 REPORT.md
 REPORT.html
 REPORT.pdf
+make_pdf.py
 *.pdf
 
 # Jupyter
