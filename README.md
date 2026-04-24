@@ -100,7 +100,7 @@ This is the close-to-close baseline — signal at month-end T close, execute at 
 
 ## Execution Realism
 
-The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. A set of ablation scripts ([`diag_four_variants.py`](diag_four_variants.py), [`ab_test_open_slippage.py`](ab_test_open_slippage.py), [`ab_test_10am_slippage.py`](ab_test_10am_slippage.py)) quantifies the cost of realistic fills:
+The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. A set of ablation scripts ([`diag_four_variants.py`](diag_four_variants.py), [`ab_test_open_slippage.py`](ab_test_open_slippage.py)) quantifies the cost of realistic fills:
 
 | Execution | CAGR | DD | Sharpe | Calmar |
 |:---|:---:|:---:|:---:|:---:|
@@ -160,9 +160,7 @@ Supporting scripts:
 ├── trading_log_open_close.py    — Per-position trade log for the fillable open-entry variant
 ├── trading_log_t1_shift.py      — Per-position trade log for the T+1 execution-lag variant
 ├── ab_test_open_slippage.py     — Open-to-open A/B (within-month)
-├── ab_test_10am_slippage.py     — 10:00-AM-to-10:00-AM A/B
 ├── prepare_open_data.py         — Builds first/last-day open matrices
-├── prepare_10am_data.py         — Builds first/last 10AM matrices from 5-min ticks
 │
 └── data/
     ├── historical_composition.csv      — PiT Nifty 50 composition (Jan 2008 →)
