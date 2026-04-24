@@ -1,6 +1,6 @@
 # WSC_MS — CatBoost + HMM Cross-Sectional Momentum Strategy
 
-Cross-sectional momentum strategy for Indian equity markets. Stocks ranked monthly by a CatBoost classifier trained on momentum signals; position sizing and stop-losses scaled dynamically by a walk-forward HMM volatility regime.
+Cross-sectional momentum strategy for Indian equity markets. Stocks are ranked monthly by a CatBoost classifier trained on momentum signals; position sizing and stop-losses are scaled dynamically by a walk-forward HMM volatility regime.
 
 ---
 
@@ -49,7 +49,7 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 
 ### Nifty 100 Monthly — Primary Benchmark (survivorship-bias free)
 
-> Out-of-sample: January 2018 – March 2025 (86 monthly rebalances)
+> Out-of-sample: January 2018 – January 2025 (84 monthly rebalances)
 
 | Metric | Value |
 |:---|:---:|
@@ -60,6 +60,8 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 | **Calmar Ratio** | **2.929** |
 | Win Rate | 69.77% |
 | Avg positions / month | ~6 |
+
+This is the close-to-close baseline — signal at month-end T close, execute at that close, exit at month-end T+1 close. See [Execution Realism](#execution-realism) for the fillable-alternative variants.
 
 ### Sizing Scheme Comparison
 
@@ -94,7 +96,22 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 
 **Critical finding**: the 6M window is the single most important lookback — removing it causes the worst risk-adjusted outcome. The 3M window is detrimental (mean-reversion noise on Indian markets) and its removal gives the global Calmar optimum.
 
+---
 
+## Execution Realism
+
+The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. A set of ablation scripts ([`diag_four_variants.py`](diag_four_variants.py), [`ab_test_open_slippage.py`](ab_test_open_slippage.py), [`ab_test_10am_slippage.py`](ab_test_10am_slippage.py)) quantifies the cost of realistic fills:
+
+| Execution | CAGR | DD | Sharpe | Calmar |
+|:---|:---:|:---:|:---:|:---:|
+| Close-to-close month-end (baseline, unfillable) | 29.29% | −10.00% | 1.164 | 2.929 |
+| **First-open entry → last-close exit** ✓ | **18.05%** | **−8.51%** | **0.828** | **2.122** |
+| T+1 shift (first-open → next first-open) | 15.72% | −8.83% | 0.670 | 1.780 |
+| Full open-to-open (within-month) | 13.44% | −10.07% | 0.622 | 1.334 |
+
+Roughly ~11pp of the headline CAGR is execution slippage — the momentum premium is [concentrated in the overnight segment](https://doi.org/10.1016/j.jfineco.2019.03.011) (Lou, Polk & Skouras 2019), so any open-to-open fill gives up most of the edge. **Entering at the next day's open and exiting at the final day's close** (bolded above) recovers the most value while remaining realistically fillable.
+
+Trading logs for both the baseline and the open-entry/close-exit variant are available via [`trading_log.py`](trading_log.py) and [`trading_log_open_close.py`](trading_log_open_close.py), writing per-position CSVs suitable for manual verification against yfinance.
 
 ---
 
@@ -112,29 +129,41 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 | **Rolling Sharpe / Calmar** | Any regime of degradation? |
 | **Regime Performance Decomposition** | How does each vol regime contribute to returns? |
 
+Supporting scripts:
+- [`annual_breakdown.py`](annual_breakdown.py) — year-by-year PnL and risk metrics.
+- [`analyze_corporate_actions.py`](analyze_corporate_actions.py) — flags months affected by splits/bonuses.
+
 ---
 
 ## Repository Structure
 
 ```
-├── config.py                — Global parameters
-├── data_fetcher.py          — Price fetching, caching, forward returns
-├── features.py              — Momentum + Z-score feature computation
-├── engine.py                — Core engine: walk-forward CatBoost, HMM directional/
-│                              volscale/hmm_vol_size sizing, prob_invvol weighting,
-│                              daily stop-loss, turnover tracking
-├── regime.py                — Walk-forward HMM regime detection (LowVol/MedVol/HighVol)
-│                              + vol-size variant (get_regimes_and_vol_sizes)
-├── main.py                  — CLI runner
-├── export_results.py        — CSV exporter for external evaluators
-├── live_portfolio.py        — Month-start production signal generator
-├── validate_strategy.py     — Full validation suite (Monte Carlo + sensitivity + charts)
-├── compare_weights.py       — Head-to-head benchmark of all 5 weighting methods
-├── ablation_lookbacks.py    — Leave-one-out lookback window ablation
-├── run_nifty_extended.py    — Nifty 500 monthly + Nifty 250 weekly backtests
-│                              (static snapshot universe, OOS 2020–2025)
-├── prepare_nifty500.py      — Builds daily cache from raw 5-min tick CSVs
-├── output/                  — Generated charts (gitignored)
+├── config.py                    — Global parameters
+├── data_fetcher.py              — Price fetching, caching, forward returns
+├── features.py                  — Momentum + Z-score feature computation
+├── engine.py                    — Core engine: walk-forward CatBoost, HMM directional /
+│                                  volscale / hmm_vol_size sizing, prob_invvol weighting,
+│                                  daily stop-loss, turnover tracking
+├── regime.py                    — Walk-forward HMM regime detection
+├── main.py                      — CLI runner
+├── export_results.py            — CSV exporter for external evaluators
+├── live_portfolio.py            — Month-start production signal generator
+├── validate_strategy.py         — Full validation suite (Monte Carlo + sensitivity + charts)
+├── compare_weights.py           — Head-to-head benchmark of all 5 weighting methods
+├── ablation_lookbacks.py        — Leave-one-out lookback window ablation
+├── annual_breakdown.py          — Per-year CAGR / DD / Sharpe decomposition
+├── analyze_corporate_actions.py — Corporate-action impact diagnostics
+│
+│   ─── Execution realism tests ───
+├── diag_four_variants.py        — 4-way comparison of entry/exit timing + training target
+├── trading_log.py               — Per-position trade log for the 29% close-to-close baseline
+├── trading_log_open_close.py    — Per-position trade log for the fillable open-entry variant
+├── trading_log_t1_shift.py      — Per-position trade log for the T+1 execution-lag variant
+├── ab_test_open_slippage.py     — Open-to-open A/B (within-month)
+├── ab_test_10am_slippage.py     — 10:00-AM-to-10:00-AM A/B
+├── prepare_open_data.py         — Builds first/last-day open matrices
+├── prepare_10am_data.py         — Builds first/last 10AM matrices from 5-min ticks
+│
 └── data/
     ├── historical_composition.csv      — PiT Nifty 50 composition (Jan 2008 →)
     └── nifty_next_50_composition.csv   — PiT Nifty Next 50 composition (Jan 2008 →)
@@ -148,7 +177,7 @@ This is the `prob_invvol` scheme — it simultaneously rewards high-conviction p
 pip install catboost scikit-learn pandas numpy yfinance scipy hmmlearn matplotlib seaborn
 
 # Primary strategy — Nifty 100 monthly
-python3 main.py --index nifty100 --sizing directional --weighting prob_invvol
+python3 main.py --index nifty100 --sizing directional
 
 # Full validation suite (14 charts → output/)
 python3 validate_strategy.py --index nifty100
@@ -162,18 +191,21 @@ python3 compare_weights.py --index nifty100
 # Lookback ablation
 python3 ablation_lookbacks.py
 
-# Extended universe (Nifty 500 + 250)
-python3 run_nifty_extended.py
+# Execution realism — per-position trade logs
+python3 trading_log.py              # 29% close-to-close baseline → trading_log_original.csv
+python3 trading_log_open_close.py   # open-entry / close-exit    → trading_log_open_close.csv
+
+# Four-variant execution comparison
+python3 diag_four_variants.py
 ```
 
-### All CLI Flags
+### CLI Flags
 
 ```
-main.py / export_results.py:
+main.py:
   --index     nifty50 | nifty100
   --regime    learned_hmm | fixed_hmm | none
-  --sizing    directional | volscale | hmm_vol_size
-  --weighting equal | probability | inverse_vol | prob_invvol | kelly
+  --sizing    directional | volscale
 
 compare_weights.py / validate_strategy.py:
   --index     nifty50 | nifty100
@@ -211,4 +243,4 @@ live_portfolio.py:
 ## Notes on Survivorship Bias
 
 - **Nifty 50 / Nifty 100**: zero survivorship bias — PiT composition CSVs cover every month from Jan 2008.
-- **Nifty 500 / Nifty 250**: static 2025 snapshot — significant survivorship bias. Use `run_nifty_extended.py` results for directional signal only, not performance benchmarking.
+- All headline results are on Nifty 100 with PiT composition. Earlier Nifty 250 / 500 extensions used a 2025 static snapshot and were removed to avoid confusion.
