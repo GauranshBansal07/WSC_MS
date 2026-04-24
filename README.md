@@ -100,18 +100,17 @@ This is the close-to-close baseline — signal at month-end T close, execute at 
 
 ## Execution Realism
 
-The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. A set of ablation scripts ([`diag_four_variants.py`](diag_four_variants.py), [`ab_test_open_slippage.py`](ab_test_open_slippage.py)) quantifies the cost of realistic fills:
+The headline 29% CAGR assumes instant fills at the month-end close, which isn't achievable at retail size. [`execution_realism.py`](execution_realism.py) quantifies the cost of realistic fills across four variants:
 
 | Execution | CAGR | DD | Sharpe | Calmar |
 |:---|:---:|:---:|:---:|:---:|
 | Close-to-close month-end (baseline, unfillable) | 29.29% | −10.00% | 1.164 | 2.929 |
 | **First-open entry → last-close exit** ✓ | **18.05%** | **−8.51%** | **0.828** | **2.122** |
-| T+1 shift (first-open → next first-open) | 15.72% | −8.83% | 0.670 | 1.780 |
 | Full open-to-open (within-month) | 13.44% | −10.07% | 0.622 | 1.334 |
 
 Roughly ~11pp of the headline CAGR is execution slippage — the momentum premium is [concentrated in the overnight segment](https://doi.org/10.1016/j.jfineco.2019.03.011) (Lou, Polk & Skouras 2019), so any open-to-open fill gives up most of the edge. **Entering at the next day's open and exiting at the final day's close** (bolded above) recovers the most value while remaining realistically fillable.
 
-Trading logs for both the baseline and the open-entry/close-exit variant are available via [`trading_log.py`](trading_log.py) and [`trading_log_open_close.py`](trading_log_open_close.py), writing per-position CSVs suitable for manual verification against yfinance.
+Per-position trading logs (one CSV row per holding, suitable for manual yfinance verification) are produced with the `--log` flag, e.g. `python3 execution_realism.py --variant oc --log`.
 
 ---
 
@@ -154,12 +153,8 @@ Supporting scripts:
 ├── annual_breakdown.py          — Per-year CAGR / DD / Sharpe decomposition
 ├── analyze_corporate_actions.py — Corporate-action impact diagnostics
 │
-│   ─── Execution realism tests ───
-├── diag_four_variants.py        — 4-way comparison of entry/exit timing + training target
-├── trading_log.py               — Per-position trade log for the 29% close-to-close baseline
-├── trading_log_open_close.py    — Per-position trade log for the fillable open-entry variant
-├── trading_log_t1_shift.py      — Per-position trade log for the T+1 execution-lag variant
-├── ab_test_open_slippage.py     — Open-to-open A/B (within-month)
+│   ─── Execution realism ───
+├── execution_realism.py         — Unified suite: cc / oc / oo / four variants + --log flag
 ├── prepare_open_data.py         — Builds first/last-day open matrices
 │
 └── data/
@@ -189,12 +184,11 @@ python3 compare_weights.py --index nifty100
 # Lookback ablation
 python3 ablation_lookbacks.py
 
-# Execution realism — per-position trade logs
-python3 trading_log.py              # 29% close-to-close baseline → trading_log_original.csv
-python3 trading_log_open_close.py   # open-entry / close-exit    → trading_log_open_close.csv
-
-# Four-variant execution comparison
-python3 diag_four_variants.py
+# Execution realism — unified suite
+python3 execution_realism.py --variant cc   --log   # 29% close-to-close baseline
+python3 execution_realism.py --variant oc   --log   # fillable open-entry / close-exit
+python3 execution_realism.py --variant oo   --log   # open-to-open (within-month)
+python3 execution_realism.py --variant four         # 4-way entry/exit × training comparison
 ```
 
 ### CLI Flags
