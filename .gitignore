@@ -10,6 +10,7 @@ __pycache__/
 *.csv
 *.pkl
 *.parquet
+!data/*.csv
 
 # Raw tick data (proprietary, too large for git)
 nifty_500_5min/
