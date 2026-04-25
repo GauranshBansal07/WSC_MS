@@ -55,13 +55,13 @@ Weights are normalised to sum to 1. Cash (uninvested fraction) earns the risk-fr
 
 | Metric | Value |
 |:---|:---:|
-| **CAGR** | **34.22%** |
-| Annualised Volatility | 17.36% |
-| **Sharpe Ratio** | **1.404** |
+| **CAGR** | **31.24%** |
+| Annualised Volatility | 18.21% |
+| **Sharpe Ratio** | **1.219** |
 | **Max Drawdown** | **−10.48%** |
-| **Calmar Ratio** | **3.264** |
-| Win Rate | 75.00% |
-| Avg positions / month | ~7 |
+| **Calmar Ratio** | **2.979** |
+| Win Rate | 71.43% |
+| Avg positions / month | ~6 |
 
 Execution: signal at month-end close, entry and exit at month-end close.
 
@@ -78,6 +78,18 @@ Execution: signal at month-end close, entry and exit at month-end close.
 
 **Critical finding**: the 6M window is the single most important lookback — removing it causes the worst risk-adjusted outcome. The 3M window is detrimental and its removal gives the global Calmar optimum.
 
+### Adjusted-Open Robustness Test
+
+Full pipeline re-run on last-trading-day-of-month adjusted open prices to confirm alpha is not an artefact of the close series:
+
+| Metric | Adj Close | Adj Open | Delta |
+|:---|:---:|:---:|:---:|
+| CAGR (%) | 31.24 | 30.68 | −0.56 |
+| Sharpe | 1.219 | 1.143 | −0.076 |
+| Max DD (%) | −10.48 | −14.25 | −3.77 |
+
+CAGR drops only 0.56% and Sharpe only 0.076 — the strategy is not biased towards the closing price series.
+
 ---
 
 ## Validation & Robustness
@@ -93,6 +105,7 @@ Execution: signal at month-end close, entry and exit at month-end close.
 | **Sensitivity: Regime Sizing** (heatmap) | Are our 10/4/3 sizes at the right local maximum? |
 | **Rolling Sharpe / Calmar** | Any regime of degradation? |
 | **Regime Performance Decomposition** | How does each vol regime contribute to returns? |
+| **Adj-Open Stress Test** | Is alpha robust to close-price methodology? |
 
 ---
 
@@ -110,6 +123,7 @@ Execution: signal at month-end close, entry and exit at month-end close.
 ├── validate_strategy.py         — Full validation suite (Monte Carlo + sensitivity + charts)
 ├── diagnostics.py               — Post-hoc analysis: --mode annual | --mode lookback
 ├── live_portfolio.py            — Month-start production signal generator
+├── open_vs_close.py             — Adj-open vs adj-close robustness test
 │
 └── data/
     ├── historical_composition.csv      — PiT Nifty 50 composition (Jan 2008 →)
@@ -128,6 +142,9 @@ python3 main.py --index nifty100
 
 # Full validation suite (charts → output/)
 python3 validate_strategy.py --index nifty100
+
+# Adjusted-open stress test
+python3 open_vs_close.py
 
 # Month-start live portfolio
 python3 live_portfolio.py --index nifty100

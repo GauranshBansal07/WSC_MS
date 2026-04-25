@@ -33,6 +33,9 @@ catboost_info/
 *.swp
 *.swo
 
+# Data caches for stress tests (large, regenerated locally)
+open_adj_cache.csv
+
 # Reports (generated locally, not committed)
 REPORT.md
 REPORT.html

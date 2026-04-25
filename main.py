@@ -7,6 +7,8 @@ from sklearn.metrics import accuracy_score, precision_score
 import logging
 
 warnings.filterwarnings('ignore')
+logging.getLogger('hmmlearn').setLevel(logging.ERROR)
+logging.getLogger('root').setLevel(logging.ERROR)
 
 from config import (
     DATA_START, DATA_END, HISTORICAL_COMPOSITION_CSV, NIFTY_NEXT_50_COMPOSITION_CSV,
@@ -41,7 +43,7 @@ def run_pit_universe(universe_name, csv_paths, is_weekly=False, regime_method='l
         prices = monthly_prices
         periods_per_year = 12
         lookbacks = LOOKBACK_WINDOWS
-        min_train = 48
+        min_train = 60
         entry_prices = monthly_prices
 
     fwd_returns = compute_forward_returns(prices)
@@ -56,7 +58,7 @@ def run_pit_universe(universe_name, csv_paths, is_weekly=False, regime_method='l
     print(f"  Classifier accuracy: {acc:.3f}  |  precision: {prec:.3f}")
 
     rebal_dates = sorted(res_df['date'].unique())
-    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=24)).strftime('%Y-%m-%d')
     freq_label_short = "wk" if is_weekly else "mo"
 
     regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=regime_method)
