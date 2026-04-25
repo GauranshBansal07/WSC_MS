@@ -163,11 +163,13 @@ def run_backtest(index_name, is_weekly=False, regime_method='learned_hmm'):
 
     # ── Regime Detection ─────────────────────────────────────────────────
     rebal_dates = sorted(res_df['date'].unique())
-    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=24)).strftime('%Y-%m-%d')
     regimes = get_regimes(rebal_dates, padding_start, DATA_END, method=regime_method)
 
     # ── Portfolio Simulation ─────────────────────────────────────────────
-    port_returns, holdings_counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
+    entry_prices = monthly_prices if not is_weekly else None
+    port_returns, holdings_counts, _ = simulate_portfolio(res_df, regimes, daily_prices,
+                                                          monthly_prices=entry_prices)
     stats = performance_stats(port_returns, periods_per_year)
 
     freq_l = "wk" if is_weekly else "mo"
@@ -180,6 +182,7 @@ def run_backtest(index_name, is_weekly=False, regime_method='learned_hmm'):
         'res_df': res_df,
         'regimes': regimes,
         'daily_prices': daily_prices,
+        'entry_prices': entry_prices,
         'periods_per_year': periods_per_year,
         'index_name': index_name,
         'is_weekly': is_weekly,
@@ -487,7 +490,7 @@ def plot_mc_paths(paths, actual_path, port_returns, label):
     print("  [OK] mc_path_simulation.png")
 
 
-def sensitivity_threshold(res_df, regimes, daily_prices, periods_per_year, label):
+def sensitivity_threshold(res_df, regimes, daily_prices, periods_per_year, label, monthly_prices=None):
     """
     Sweep probability threshold from 0.50 to 0.70 and measure Sharpe & CAGR.
     """
@@ -500,7 +503,8 @@ def sensitivity_threshold(res_df, regimes, daily_prices, periods_per_year, label
     original_thresh = eng.PROB_THRESHOLD
     for thresh in thresholds:
         eng.PROB_THRESHOLD = thresh
-        port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
+        port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices,
+                                             monthly_prices=monthly_prices)
         s = performance_stats(port, periods_per_year)
         results.append({'threshold': thresh, 'sharpe': s['sharpe'], 'cagr': s['ann'],
                         'max_dd': s['dd'], 'win_rate': s['win']})
@@ -539,7 +543,7 @@ def sensitivity_threshold(res_df, regimes, daily_prices, periods_per_year, label
     return results_df
 
 
-def sensitivity_stoploss(res_df, regimes, daily_prices, periods_per_year, label):
+def sensitivity_stoploss(res_df, regimes, daily_prices, periods_per_year, label, monthly_prices=None):
     """
     Sweep stop-loss levels from -3% to -15% and measure CAGR + Max DD.
     """
@@ -555,7 +559,8 @@ def sensitivity_stoploss(res_df, regimes, daily_prices, periods_per_year, label)
         # Apply uniform stop across all regimes
         for regime in eng.REGIME_STOP:
             eng.REGIME_STOP[regime] = stop
-        port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
+        port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices,
+                                             monthly_prices=monthly_prices)
         s = performance_stats(port, periods_per_year)
         results.append({'stop_loss': stop * 100, 'sharpe': s['sharpe'], 'cagr': s['ann'],
                         'max_dd': s['dd'], 'calmar': s['calmar']})
@@ -598,7 +603,7 @@ def sensitivity_stoploss(res_df, regimes, daily_prices, periods_per_year, label)
     return results_df
 
 
-def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, label):
+def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, label, monthly_prices=None):
     """
     Sweep LowVol/MedVol sizing combos and measure Sharpe in a heatmap.
     """
@@ -617,7 +622,8 @@ def sensitivity_regime_sizing(res_df, regimes, daily_prices, periods_per_year, l
             eng.REGIME_SIZE['MedVol'] = n_size
             eng.REGIME_SIZE['HighVol'] = max(2, n_size - 1)
 
-            port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices)
+            port, counts, _ = simulate_portfolio(res_df, regimes, daily_prices,
+                                                 monthly_prices=monthly_prices)
             s = performance_stats(port, periods_per_year)
             heatmap_data[i, j] = s['sharpe']
             print(f"    LowVol={b_size:2d}  MedVol={n_size}  HighVol={max(2, n_size-1)}  ->  Sharpe={s['sharpe']:.3f}")
@@ -820,12 +826,13 @@ def run_full_validation(index_name='nifty50', is_weekly=False, regime_method='le
     plot_mc_paths(paths, actual_path, port_returns, label)
 
     # ── 5. Parameter Sensitivity ─────────────────────────────────────────
+    entry_prices = data['entry_prices']
     sensitivity_threshold(data['res_df'], data['regimes'], data['daily_prices'],
-                          data['periods_per_year'], label)
+                          data['periods_per_year'], label, monthly_prices=entry_prices)
     sensitivity_stoploss(data['res_df'], data['regimes'], data['daily_prices'],
-                         data['periods_per_year'], label)
+                         data['periods_per_year'], label, monthly_prices=entry_prices)
     sensitivity_regime_sizing(data['res_df'], data['regimes'], data['daily_prices'],
-                              data['periods_per_year'], label)
+                              data['periods_per_year'], label, monthly_prices=entry_prices)
 
     # ── 6. Regime Performance ────────────────────────────────────────────
     plot_regime_performance(port_returns, data['regimes'], label)
