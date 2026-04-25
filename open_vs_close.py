@@ -45,7 +45,7 @@ from engine import (
 )
 from regime import get_regimes
 
-ADJ_OPEN_CACHE = os.path.join(os.path.dirname(__file__), 'open_adj_cache.csv')
+ADJ_OPEN_CACHE = os.path.join(os.path.dirname(__file__), f'open_adj_cache_{DATA_START}_{DATA_END}.csv')
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def fetch_adj_open_monthly(tickers, start, end,
 # Single run helper (mirrors main.py's run_pit_universe)
 # ---------------------------------------------------------------------------
 
-def _run(label, prices, mask, daily_prices):
+def _run(label, prices, mask, daily_prices, exit_prices=None):
     """Run the full pipeline on a given monthly price matrix."""
     banner = "=" * 80
     print(f"\n{banner}\nRUNNING — {label}\n{banner}")
@@ -137,7 +137,7 @@ def _run(label, prices, mask, daily_prices):
     stacked       = build_stacked_dataset(
         prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS,
     )
-    res_df = run_expanding_window(stacked, min_train_months=60)
+    res_df = run_expanding_window(stacked, min_train_months=0)
     if res_df is None:
         print("Not enough data — skipping.")
         return None, None
@@ -153,7 +153,7 @@ def _run(label, prices, mask, daily_prices):
 
     regimes = get_regimes(rebal_dates, padding_start, DATA_END)
     port, counts, _ = simulate_portfolio(
-        res_df, regimes, daily_prices, monthly_prices=prices,
+        res_df, regimes, daily_prices, monthly_prices=prices, exit_prices=exit_prices,
     )
     stats = performance_stats(port, periods_per_year=12)
     print_stats(stats, f"NIFTY 100 — {label}", counts, freq_label="mo")
@@ -178,7 +178,8 @@ def main():
     monthly_open = fetch_adj_open_monthly(tickers, DATA_START, DATA_END)
 
     stats_close, _ = _run("ADJ CLOSE (baseline)", monthly_close, mask, daily_prices)
-    stats_open,  _ = _run("ADJ OPEN  (stress)",   monthly_open,  mask, daily_prices)
+    stats_open,  _ = _run("ADJ OPEN  (stress)",   monthly_open,  mask, daily_prices,
+                          exit_prices=monthly_open)
 
     # -------------------------------------------------------------------
     # Side-by-side comparison

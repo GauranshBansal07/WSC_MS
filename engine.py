@@ -162,7 +162,8 @@ def _compute_weights(buys, daily_prices, date, method='prob_invvol', historical_
 
 # ---- Portfolio engine (long-only, directional HMM sizing) ----------------
 def simulate_portfolio(res_df, regimes, daily_prices,
-                       weighting='prob_invvol', monthly_prices=None):
+                       weighting='prob_invvol', monthly_prices=None,
+                       exit_prices=None):
     """
     Long-only monthly rebalancer with HMM regime sizing and daily stop-loss.
 
@@ -170,13 +171,14 @@ def simulate_portfolio(res_df, regimes, daily_prices,
     {LowVol:−7%, MedVol:−6%, HighVol:−4%}.
 
     Stop-loss uses a dual-tranche approach:
-      w_held — carried over from last month, entry = last month-end close
-      w_new  — added this month, entry = this month-end close
+      w_held — carried over from last month, entry = last month-end price
+      w_new  — added this month, entry = this month-end price
     Each tranche is monitored independently against daily closes.
 
-    monthly_prices is used as the canonical entry-price source to avoid the
-    date-alignment bug where daily_prices.iloc[0] can be the next month's
-    first-day price when month-end falls on a weekend/holiday.
+    monthly_prices — canonical entry-price source (close or open).
+    exit_prices    — if provided, clean exits use exit_prices.loc[next_date]
+                     instead of the daily close; daily closes still used for
+                     stop-loss path monitoring.
 
     Returns (port_returns, holdings_counts, extra)
       extra = dict(turnover_track)
@@ -238,7 +240,19 @@ def simulate_portfolio(res_df, regimes, daily_prices,
 
             if ticker in d_window.columns and not d_window[ticker].dropna().empty:
                 valid_prices = d_window[ticker].dropna()
-                exit_price   = float(valid_prices.iloc[-1])
+
+                # Clean exit: use exit_prices (e.g. adj open) when provided,
+                # otherwise fall back to the last daily close in the window.
+                clean_exit = None
+                if (exit_prices is not None
+                        and next_date is not None
+                        and ticker in exit_prices.columns
+                        and next_date in exit_prices.index):
+                    v = exit_prices.loc[next_date, ticker]
+                    if pd.notna(v) and v > 0:
+                        clean_exit = float(v)
+                if clean_exit is None:
+                    clean_exit = float(valid_prices.iloc[-1])
 
                 fallback = float(valid_prices.iloc[0])
                 if curr_entry is None:
@@ -252,7 +266,7 @@ def simulate_portfolio(res_df, regimes, daily_prices,
                     path = valid_prices / entry - 1.0
                     if (path <= stop).any():
                         return stop * tranche_w
-                    return (exit_price / entry - 1.0) * tranche_w
+                    return (clean_exit / entry - 1.0) * tranche_w
 
                 invested_return += _tranche(w_held, prev_entry)
                 invested_return += _tranche(w_new,  curr_entry)

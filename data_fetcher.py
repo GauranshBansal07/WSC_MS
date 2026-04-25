@@ -8,16 +8,23 @@ Returns a DataFrame: DatetimeIndex (month-end) × tickers, values = adjusted clo
 """
 
 import os
+import numpy as np
 import pandas as pd
 import yfinance as yf
 import warnings
 
 warnings.filterwarnings('ignore')
 
-CACHE_PATH = os.path.join(os.path.dirname(__file__), 'price_cache.csv')
-DAILY_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'daily_cache.csv')
-FIRST_OPEN_CACHE = os.path.join(os.path.dirname(__file__), 'monthly_first_open_adj.csv')
-LAST_OPEN_CACHE  = os.path.join(os.path.dirname(__file__), 'monthly_last_open_adj.csv')
+from config import DATA_START, DATA_END
+
+def _dated_cache(name: str) -> str:
+    """Build a cache path that encodes the date range, e.g. price_cache_2008-01-01_2025-10-31.csv"""
+    return os.path.join(os.path.dirname(__file__), f'{name}_{DATA_START}_{DATA_END}.csv')
+
+CACHE_PATH       = _dated_cache('price_cache')
+DAILY_CACHE_PATH = _dated_cache('daily_cache')
+FIRST_OPEN_CACHE = _dated_cache('monthly_first_open_adj')
+LAST_OPEN_CACHE  = _dated_cache('monthly_last_open_adj')
 
 def load_historical_composition(csv_paths):
     if isinstance(csv_paths, str):
