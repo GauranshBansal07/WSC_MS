@@ -197,3 +197,11 @@ validate_strategy.py / live_portfolio.py:
 
 - **Nifty 50 / Nifty 100**: zero survivorship bias — PiT composition CSVs cover every month from Jan 2008.
 - All headline results are on Nifty 100 with PiT composition.
+
+---
+
+## Cache Files
+
+Pre-built cache files (`price_cache.csv`, `daily_cache.csv`, `open_adj_cache.csv`) covering **Jan 2008 → Apr 2026** are committed to the root directory. Place them in the project root before running.
+
+> **Recommended:** If you have existing cache files from a previous run, delete them before using the ones provided here — stale or mismatched caches can silently produce different adjusted prices and shift backtest results.

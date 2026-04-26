@@ -11,7 +11,9 @@ __pycache__/
 *.pkl
 *.parquet
 !data/*.csv
-!cache_files/*.csv
+!price_cache.csv
+!daily_cache.csv
+!open_adj_cache.csv
 
 # Raw tick data (proprietary, too large for git)
 nifty_500_5min/
@@ -34,8 +36,6 @@ catboost_info/
 *.swp
 *.swo
 
-# Data caches for stress tests (large, regenerated locally)
-open_adj_cache.csv
 
 # Reports (generated locally, not committed)
 REPORT.md
