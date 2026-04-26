@@ -260,10 +260,19 @@ def simulate_portfolio(res_df, regimes, daily_prices,
                 if prev_entry is None:
                     prev_entry = curr_entry
 
+                # When exiting at open, exclude the exit day's close from the
+                # stop path — we're already out at that day's open before the
+                # close prints, so it can't trigger a stop.
+                stop_path_prices = (
+                    valid_prices.iloc[:-1]
+                    if (exit_prices is not None and len(valid_prices) > 1)
+                    else valid_prices
+                )
+
                 def _tranche(tranche_w, entry):
                     if tranche_w <= 0 or entry <= 0:
                         return 0.0
-                    path = valid_prices / entry - 1.0
+                    path = stop_path_prices / entry - 1.0
                     if (path <= stop).any():
                         return stop * tranche_w
                     return (clean_exit / entry - 1.0) * tranche_w

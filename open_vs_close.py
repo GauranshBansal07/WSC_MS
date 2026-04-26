@@ -45,7 +45,7 @@ from engine import (
 )
 from regime import get_regimes
 
-ADJ_OPEN_CACHE = os.path.join(os.path.dirname(__file__), f'open_adj_cache_{DATA_START}_{DATA_END}.csv')
+ADJ_OPEN_CACHE = os.path.join(os.path.dirname(__file__), 'open_adj_cache.csv')
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,7 @@ def fetch_adj_open_monthly(tickers, start, end,
     if os.path.exists(cache_path) and not force_refresh:
         print(f"Loading cached adj open from {cache_path}")
         df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        df = df[df.index <= pd.Timestamp(end) + pd.offsets.MonthEnd(0)]
         print(f"  shape: {df.shape}")
         return df
 
@@ -137,7 +138,7 @@ def _run(label, prices, mask, daily_prices, exit_prices=None):
     stacked       = build_stacked_dataset(
         prices, mask, fwd_returns, momentum_dict, LOOKBACK_WINDOWS,
     )
-    res_df = run_expanding_window(stacked, min_train_months=0)
+    res_df = run_expanding_window(stacked, min_train_months=60)
     if res_df is None:
         print("Not enough data — skipping.")
         return None, None
@@ -147,10 +148,7 @@ def _run(label, prices, mask, daily_prices, exit_prices=None):
     print(f"  Classifier accuracy: {acc:.3f}  |  precision: {prec:.3f}")
 
     rebal_dates   = sorted(res_df['date'].unique())
-    padding_start = (
-        pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=24)
-    ).strftime('%Y-%m-%d')
-
+    padding_start = (pd.to_datetime(rebal_dates[0]) - pd.DateOffset(months=24)).strftime('%Y-%m-%d')
     regimes = get_regimes(rebal_dates, padding_start, DATA_END)
     port, counts, _ = simulate_portfolio(
         res_df, regimes, daily_prices, monthly_prices=prices, exit_prices=exit_prices,

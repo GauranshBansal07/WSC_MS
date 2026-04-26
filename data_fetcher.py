@@ -15,16 +15,14 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-from config import DATA_START, DATA_END
 
-def _dated_cache(name: str) -> str:
-    """Build a cache path that encodes the date range, e.g. price_cache_2008-01-01_2025-10-31.csv"""
-    return os.path.join(os.path.dirname(__file__), f'{name}_{DATA_START}_{DATA_END}.csv')
+def _cache(name: str) -> str:
+    return os.path.join(os.path.dirname(__file__), f'{name}.csv')
 
-CACHE_PATH       = _dated_cache('price_cache')
-DAILY_CACHE_PATH = _dated_cache('daily_cache')
-FIRST_OPEN_CACHE = _dated_cache('monthly_first_open_adj')
-LAST_OPEN_CACHE  = _dated_cache('monthly_last_open_adj')
+CACHE_PATH       = _cache('price_cache')
+DAILY_CACHE_PATH = _cache('daily_cache')
+FIRST_OPEN_CACHE = _cache('monthly_first_open_adj')
+LAST_OPEN_CACHE  = _cache('monthly_last_open_adj')
 
 def load_historical_composition(csv_paths):
     if isinstance(csv_paths, str):
@@ -74,6 +72,7 @@ def fetch_monthly_prices(csv_paths, start, end, cache_path=CACHE_PATH, force_ref
     if os.path.exists(cache_path) and not force_refresh:
         print(f"Loading cached prices from {cache_path}")
         prices = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        prices = prices[prices.index <= pd.Timestamp(end) + pd.offsets.MonthEnd(0)]
         return prices, mask
 
     print(f"Downloading monthly prices for {len(tickers)} tickers...")
@@ -128,7 +127,8 @@ def fetch_daily_prices(tickers, start, end, cache_path=DAILY_CACHE_PATH, force_r
     """
     if os.path.exists(cache_path) and not force_refresh:
         print(f"Loading cached daily prices from {cache_path}")
-        return pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        daily = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        return daily[daily.index <= pd.Timestamp(end)]
 
     print(f"Downloading daily prices for {len(tickers)} tickers ({start} to {end})...")
     raw = yf.download(tickers, start=start, end=end, interval='1d',
