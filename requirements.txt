@@ -1,0 +1,8 @@
+catboost>=1.2
+hmmlearn>=0.3
+yfinance>=0.2
+pandas>=2.0
+numpy>=1.26
+scikit-learn>=1.4
+seaborn>=0.13
+matplotlib>=3.8
